@@ -1,0 +1,111 @@
+==================================================
+
+✨ PRETTY-PRINTED JSON:
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "python"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "1.39.1"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "python-service"
+            }
+          },
+          {
+            "key": "telemetry.auto.version",
+            "value": {
+              "stringValue": "0.60b1"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "__main__"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "1771788003684614400",
+              "observedTimeUnixNano": "1771788003684830020",
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "body": {
+                "stringValue": "Quote requested. Details: {\"user\": \"[REDACTED_EMAIL]\", \"author\": \"[REDACTED_AUTHOR]\", \"text\": \"Stay hungry, stay foolish.\"}"
+              },
+              "attributes": [
+                {
+                  "key": "otelSpanID",
+                  "value": {
+                    "stringValue": "e16555e9d4925682"
+                  }
+                },
+                {
+                  "key": "otelTraceID",
+                  "value": {
+                    "stringValue": "6e29551464ff0d20bacea96065688576"
+                  }
+                },
+                {
+                  "key": "otelTraceSampled",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "otelServiceName",
+                  "value": {
+                    "stringValue": "python-service"
+                  }
+                },
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "/home/deadiu/BE_Project/microservices/quote-service/main.py"
+                  }
+                },
+                {
+                  "key": "code.function.name",
+                  "value": {
+                    "stringValue": "get_quote"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "29"
+                  }
+                }
+              ],
+              "flags": 1,
+              "traceId": "6e29551464ff0d20bacea96065688576",
+              "spanId": "e16555e9d4925682"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+✅ REDACTION CHECK: Email masked successfully.
+✅ REDACTION CHECK: Author masked successfully.

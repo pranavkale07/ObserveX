@@ -1,0 +1,84 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+  # Log Redaction using Transform Processor
+  transform:
+    log_statements:
+      - context: log
+        statements:
+          # Mask email-like patterns in the body
+          - replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")
+          # Mask potential credit card numbers
+          - replace_pattern(body, "\\b\\d{4}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b", "[REDACTED_CC]")
+          # Mask author names in JSON log bodies
+          - 'replace_pattern(body, "\"author\":\\s*\"[^\"]*\"", "\"author\": \"[REDACTED_AUTHOR]\"")'
+
+exporters:
+  rabbitmq/logs:
+    connection:
+      endpoint: "amqp://172.17.0.1:5672"
+      auth:
+        plain:
+          username: "telemetry"
+          password: "telemetry_password"
+      connection_timeout: 5s
+    routing:
+      exchange: "" 
+      routing_key: "otel-telemetry"
+    encoding_extension: otlp_encoding
+
+  rabbitmq/metrics:
+    connection:
+      endpoint: "amqp://172.17.0.1:5672"
+      auth:
+        plain:
+          username: "telemetry"
+          password: "telemetry_password"
+      connection_timeout: 5s
+    routing:
+      exchange: "" 
+      routing_key: "otel-telemetry"
+    encoding_extension: otlp_encoding
+
+  rabbitmq/traces:
+    connection:
+      endpoint: "amqp://172.17.0.1:5672"
+      auth:
+        plain:
+          username: "telemetry"
+          password: "telemetry_password"
+      connection_timeout: 5s
+    routing:
+      exchange: ""
+      routing_key: "otel-telemetry"
+    encoding_extension: otlp_encoding
+
+extensions:
+  otlp_encoding:
+    protocol: otlp_json
+
+service:
+  extensions: [otlp_encoding]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [rabbitmq/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [rabbitmq/metrics]
+    logs:
+      receivers: [otlp]
+      processors: [batch, transform]
+      exporters: [rabbitmq/logs]

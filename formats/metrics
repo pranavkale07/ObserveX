@@ -1,0 +1,343 @@
+venv) deadiu@Adiu:~/BE_Project/instrumentation$ python3 verify_telemetry.py otlp_metrics
+🚀 Active Listener on: otlp_metrics
+Waiting for telemetry... Press CTRL+C to stop.
+
+==================================================
+📥 RECEIVED MESSAGE on: otlp_metrics
+==================================================
+
+✨ PRETTY-PRINTED JSON:
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "python"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "1.39.1"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "python-service"
+            }
+          },
+          {
+            "key": "telemetry.auto.version",
+            "value": {
+              "stringValue": "0.60b1"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "opentelemetry.instrumentation.fastapi",
+            "version": "0.60b1"
+          },
+          "metrics": [
+            {
+              "name": "http.server.active_requests",
+              "description": "Number of active HTTP server requests.",
+              "unit": "{request}",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "http.scheme",
+                        "value": {
+                          "stringValue": "http"
+                        }
+                      },
+                      {
+                        "key": "http.host",
+                        "value": {
+                          "stringValue": "127.0.0.1:5000"
+                        }
+                      },
+                      {
+                        "key": "http.flavor",
+                        "value": {
+                          "stringValue": "1.1"
+                        }
+                      },
+                      {
+                        "key": "http.method",
+                        "value": {
+                          "stringValue": "GET"
+                        }
+                      },
+                      {
+                        "key": "http.server_name",
+                        "value": {
+                          "stringValue": "localhost:5000"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1771787138992118079",
+                    "timeUnixNano": "1771788054400727016",
+                    "asInt": "0",
+                    "exemplars": [
+                      {
+                        "timeUnixNano": "1771788027262389338",
+                        "asInt": "-1",
+                        "spanId": "b02ee18c94990f02",
+                        "traceId": "9172a66ec2faff13ec3c077f42c83ed8"
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": 2
+              }
+            },
+            {
+              "name": "http.server.duration",
+              "description": "Measures the duration of inbound HTTP requests.",
+              "unit": "ms",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "http.scheme",
+                        "value": {
+                          "stringValue": "http"
+                        }
+                      },
+                      {
+                        "key": "http.host",
+                        "value": {
+                          "stringValue": "127.0.0.1:5000"
+                        }
+                      },
+                      {
+                        "key": "net.host.port",
+                        "value": {
+                          "intValue": "5000"
+                        }
+                      },
+                      {
+                        "key": "http.flavor",
+                        "value": {
+                          "stringValue": "1.1"
+                        }
+                      },
+                      {
+                        "key": "http.method",
+                        "value": {
+                          "stringValue": "GET"
+                        }
+                      },
+                      {
+                        "key": "http.server_name",
+                        "value": {
+                          "stringValue": "localhost:5000"
+                        }
+                      },
+                      {
+                        "key": "http.status_code",
+                        "value": {
+                          "intValue": "200"
+                        }
+                      },
+                      {
+                        "key": "http.target",
+                        "value": {
+                          "stringValue": "/api/quote"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1771787139095895545",
+                    "timeUnixNano": "1771788054400727016",
+                    "count": "10",
+                    "sum": 1031,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "10",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0,
+                      5,
+                      10,
+                      25,
+                      50,
+                      75,
+                      100,
+                      250,
+                      500,
+                      750,
+                      1000,
+                      2500,
+                      5000,
+                      7500,
+                      10000
+                    ],
+                    "exemplars": [
+                      {
+                        "timeUnixNano": "1771788027262347973",
+                        "asInt": "103",
+                        "spanId": "b02ee18c94990f02",
+                        "traceId": "9172a66ec2faff13ec3c077f42c83ed8"
+                      }
+                    ],
+                    "min": 102,
+                    "max": 106
+                  }
+                ],
+                "aggregationTemporality": 2
+              }
+            },
+            {
+              "name": "http.server.response.size",
+              "description": "measures the size of HTTP response messages (compressed).",
+              "unit": "By",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "http.scheme",
+                        "value": {
+                          "stringValue": "http"
+                        }
+                      },
+                      {
+                        "key": "http.host",
+                        "value": {
+                          "stringValue": "127.0.0.1:5000"
+                        }
+                      },
+                      {
+                        "key": "net.host.port",
+                        "value": {
+                          "intValue": "5000"
+                        }
+                      },
+                      {
+                        "key": "http.flavor",
+                        "value": {
+                          "stringValue": "1.1"
+                        }
+                      },
+                      {
+                        "key": "http.method",
+                        "value": {
+                          "stringValue": "GET"
+                        }
+                      },
+                      {
+                        "key": "http.server_name",
+                        "value": {
+                          "stringValue": "localhost:5000"
+                        }
+                      },
+                      {
+                        "key": "http.status_code",
+                        "value": {
+                          "intValue": "200"
+                        }
+                      },
+                      {
+                        "key": "http.target",
+                        "value": {
+                          "stringValue": "/api/quote"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1771787139096037771",
+                    "timeUnixNano": "1771788054400727016",
+                    "count": "10",
+                    "sum": 751,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "5",
+                      "5",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0,
+                      5,
+                      10,
+                      25,
+                      50,
+                      75,
+                      100,
+                      250,
+                      500,
+                      750,
+                      1000,
+                      2500,
+                      5000,
+                      7500,
+                      10000
+                    ],
+                    "exemplars": [
+                      {
+                        "timeUnixNano": "1771788003685864478",
+                        "asInt": "59",
+                        "spanId": "7ac5156715cc43b3",
+                        "traceId": "6e29551464ff0d20bacea96065688576"
+                      },
+                      {
+                        "timeUnixNano": "1771788027262409787",
+                        "asInt": "90",
+                        "spanId": "b02ee18c94990f02",
+                        "traceId": "9172a66ec2faff13ec3c077f42c83ed8"
+                      }
+                    ],
+                    "min": 59,
+                    "max": 100
+                  }
+                ],
+                "aggregationTemporality": 2
+              }
+            }
+          ],
+          "schemaUrl": "https://opentelemetry.io/schemas/1.11.0"
+        }
+      ]
+    }
+  ]
+}

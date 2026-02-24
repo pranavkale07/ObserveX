@@ -1,0 +1,690 @@
+(venv) deadiu@Adiu:~/BE_Project/instrumentation$ python3 verify_telemetry.py otlp_traces
+🚀 Active Listener on: otlp_traces
+Waiting for telemetry... Press CTRL+C to stop.
+
+==================================================
+📥 RECEIVED MESSAGE on: otlp_traces
+==================================================
+
+✨ PRETTY-PRINTED JSON:
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "python"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "1.39.1"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "python-service"
+            }
+          },
+          {
+            "key": "telemetry.auto.version",
+            "value": {
+              "stringValue": "0.60b1"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "opentelemetry.instrumentation.fastapi",
+            "version": "0.60b1"
+          },
+          "spans": [
+            {
+              "traceId": "4ed8a93824baec0e31e9a6b7575f4e84",
+              "spanId": "4795cbabd734272b",
+              "parentSpanId": "c564d12171fb53d2",
+              "flags": 256,
+              "name": "GET /api/quote http send",
+              "kind": 1,
+              "startTimeUnixNano": "1771787885872684345",
+              "endTimeUnixNano": "1771787885872718392",
+              "attributes": [
+                {
+                  "key": "asgi.event.type",
+                  "value": {
+                    "stringValue": "http.response.start"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ],
+              "status": {}
+            },
+            {
+              "traceId": "4ed8a93824baec0e31e9a6b7575f4e84",
+              "spanId": "9927e427d8375166",
+              "parentSpanId": "c564d12171fb53d2",
+              "flags": 256,
+              "name": "GET /api/quote http send",
+              "kind": 1,
+              "startTimeUnixNano": "1771787885873139786",
+              "endTimeUnixNano": "1771787885873182154",
+              "attributes": [
+                {
+                  "key": "asgi.event.type",
+                  "value": {
+                    "stringValue": "http.response.body"
+                  }
+                }
+              ],
+              "status": {}
+            },
+            {
+              "traceId": "4ed8a93824baec0e31e9a6b7575f4e84",
+              "spanId": "c564d12171fb53d2",
+              "parentSpanId": "3b16f525a983c720",
+              "flags": 768,
+              "name": "GET /api/quote",
+              "kind": 2,
+              "startTimeUnixNano": "1771787885770794035",
+              "endTimeUnixNano": "1771787885873268659",
+              "attributes": [
+                {
+                  "key": "http.scheme",
+                  "value": {
+                    "stringValue": "http"
+                  }
+                },
+                {
+                  "key": "http.host",
+                  "value": {
+                    "stringValue": "127.0.0.1:5000"
+                  }
+                },
+                {
+                  "key": "net.host.port",
+                  "value": {
+                    "intValue": "5000"
+                  }
+                },
+                {
+                  "key": "http.flavor",
+                  "value": {
+                    "stringValue": "1.1"
+                  }
+                },
+                {
+                  "key": "http.target",
+                  "value": {
+                    "stringValue": "/api/quote"
+                  }
+                },
+                {
+                  "key": "http.url",
+                  "value": {
+                    "stringValue": "http://localhost:5000/api/quote"
+                  }
+                },
+                {
+                  "key": "http.method",
+                  "value": {
+                    "stringValue": "GET"
+                  }
+                },
+                {
+                  "key": "http.server_name",
+                  "value": {
+                    "stringValue": "localhost:5000"
+                  }
+                },
+                {
+                  "key": "http.user_agent",
+                  "value": {
+                    "stringValue": "axios/1.13.5"
+                  }
+                },
+                {
+                  "key": "net.peer.ip",
+                  "value": {
+                    "stringValue": "127.0.0.1"
+                  }
+                },
+                {
+                  "key": "net.peer.port",
+                  "value": {
+                    "intValue": "43728"
+                  }
+                },
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/api/quote"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ],
+              "status": {}
+            }
+          ],
+          "schemaUrl": "https://opentelemetry.io/schemas/1.11.0"
+        }
+      ]
+    }
+  ]
+}
+
+==================================================
+📥 RECEIVED MESSAGE on: otlp_traces
+==================================================
+
+✨ PRETTY-PRINTED JSON:
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "node-service"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "nodejs"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "1.19.0"
+            }
+          },
+          {
+            "key": "host.name",
+            "value": {
+              "stringValue": "Adiu"
+            }
+          },
+          {
+            "key": "host.arch",
+            "value": {
+              "stringValue": "amd64"
+            }
+          },
+          {
+            "key": "os.type",
+            "value": {
+              "stringValue": "linux"
+            }
+          },
+          {
+            "key": "os.version",
+            "value": {
+              "stringValue": "6.6.87.2-microsoft-standard-WSL2"
+            }
+          },
+          {
+            "key": "process.pid",
+            "value": {
+              "intValue": "82979"
+            }
+          },
+          {
+            "key": "process.executable.name",
+            "value": {
+              "stringValue": "node"
+            }
+          },
+          {
+            "key": "process.executable.path",
+            "value": {
+              "stringValue": "/home/deadiu/.nvm/versions/node/v24.11.1/bin/node"
+            }
+          },
+          {
+            "key": "process.command_args",
+            "value": {
+              "arrayValue": {
+                "values": [
+                  {
+                    "stringValue": "/home/deadiu/.nvm/versions/node/v24.11.1/bin/node"
+                  },
+                  {
+                    "stringValue": "/home/deadiu/BE_Project/microservices/api-gateway/index.js"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "key": "process.runtime.version",
+            "value": {
+              "stringValue": "24.11.1"
+            }
+          },
+          {
+            "key": "process.runtime.name",
+            "value": {
+              "stringValue": "nodejs"
+            }
+          },
+          {
+            "key": "process.runtime.description",
+            "value": {
+              "stringValue": "Node.js"
+            }
+          },
+          {
+            "key": "process.command",
+            "value": {
+              "stringValue": "/home/deadiu/BE_Project/microservices/api-gateway/index.js"
+            }
+          },
+          {
+            "key": "process.owner",
+            "value": {
+              "stringValue": "deadiu"
+            }
+          },
+          {
+            "key": "container.id",
+            "value": {
+              "stringValue": "init"
+            }
+          },
+          {
+            "key": "host.id",
+            "value": {
+              "stringValue": "9777639dbdcc434b84cc6a370abe27d1"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "@opentelemetry/instrumentation-express",
+            "version": "0.34.1"
+          },
+          "spans": [
+            {
+              "traceId": "4ed8a93824baec0e31e9a6b7575f4e84",
+              "spanId": "966bf5e13adff3f7",
+              "parentSpanId": "bfb01c0a6d7f7f3c",
+              "name": "middleware - query",
+              "kind": 1,
+              "startTimeUnixNano": "1771787885764000000",
+              "endTimeUnixNano": "1771787885764034475",
+              "attributes": [
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/"
+                  }
+                },
+                {
+                  "key": "express.name",
+                  "value": {
+                    "stringValue": "query"
+                  }
+                },
+                {
+                  "key": "express.type",
+                  "value": {
+                    "stringValue": "middleware"
+                  }
+                }
+              ],
+              "status": {}
+            },
+            {
+              "traceId": "4ed8a93824baec0e31e9a6b7575f4e84",
+              "spanId": "b40cb83127883b52",
+              "parentSpanId": "bfb01c0a6d7f7f3c",
+              "name": "middleware - expressInit",
+              "kind": 1,
+              "startTimeUnixNano": "1771787885765000000",
+              "endTimeUnixNano": "1771787885765077163",
+              "attributes": [
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/"
+                  }
+                },
+                {
+                  "key": "express.name",
+                  "value": {
+                    "stringValue": "expressInit"
+                  }
+                },
+                {
+                  "key": "express.type",
+                  "value": {
+                    "stringValue": "middleware"
+                  }
+                }
+              ],
+              "status": {}
+            },
+            {
+              "traceId": "4ed8a93824baec0e31e9a6b7575f4e84",
+              "spanId": "ab18387102a4171c",
+              "parentSpanId": "bfb01c0a6d7f7f3c",
+              "name": "request handler - /api/proxy-quote",
+              "kind": 1,
+              "startTimeUnixNano": "1771787885765000000",
+              "endTimeUnixNano": "1771787885765003443",
+              "attributes": [
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/api/proxy-quote"
+                  }
+                },
+                {
+                  "key": "express.name",
+                  "value": {
+                    "stringValue": "/api/proxy-quote"
+                  }
+                },
+                {
+                  "key": "express.type",
+                  "value": {
+                    "stringValue": "request_handler"
+                  }
+                }
+              ],
+              "status": {}
+            }
+          ]
+        },
+        {
+          "scope": {
+            "name": "@opentelemetry/instrumentation-net",
+            "version": "0.32.5"
+          },
+          "spans": [
+            {
+              "traceId": "4ed8a93824baec0e31e9a6b7575f4e84",
+              "spanId": "43192da385b622de",
+              "parentSpanId": "3b16f525a983c720",
+              "name": "tcp.connect",
+              "kind": 1,
+              "startTimeUnixNano": "1771787885765000000",
+              "endTimeUnixNano": "1771787885769263175",
+              "attributes": [
+                {
+                  "key": "net.transport",
+                  "value": {
+                    "stringValue": "ip_tcp"
+                  }
+                },
+                {
+                  "key": "net.peer.name",
+                  "value": {
+                    "stringValue": "localhost"
+                  }
+                },
+                {
+                  "key": "net.peer.port",
+                  "value": {
+                    "stringValue": "5000"
+                  }
+                },
+                {
+                  "key": "net.peer.ip",
+                  "value": {
+                    "stringValue": "127.0.0.1"
+                  }
+                },
+                {
+                  "key": "net.host.ip",
+                  "value": {
+                    "stringValue": "127.0.0.1"
+                  }
+                },
+                {
+                  "key": "net.host.port",
+                  "value": {
+                    "intValue": "43728"
+                  }
+                }
+              ],
+              "status": {}
+            }
+          ]
+        },
+        {
+          "scope": {
+            "name": "@opentelemetry/instrumentation-http",
+            "version": "0.46.0"
+          },
+          "spans": [
+            {
+              "traceId": "4ed8a93824baec0e31e9a6b7575f4e84",
+              "spanId": "3b16f525a983c720",
+              "parentSpanId": "bfb01c0a6d7f7f3c",
+              "name": "GET",
+              "kind": 3,
+              "startTimeUnixNano": "1771787885765000000",
+              "endTimeUnixNano": "1771787885873152883",
+              "attributes": [
+                {
+                  "key": "http.url",
+                  "value": {
+                    "stringValue": "http://localhost:5000/api/quote"
+                  }
+                },
+                {
+                  "key": "http.method",
+                  "value": {
+                    "stringValue": "GET"
+                  }
+                },
+                {
+                  "key": "http.target",
+                  "value": {
+                    "stringValue": "/api/quote"
+                  }
+                },
+                {
+                  "key": "net.peer.name",
+                  "value": {
+                    "stringValue": "localhost"
+                  }
+                },
+                {
+                  "key": "http.host",
+                  "value": {
+                    "stringValue": "localhost:5000"
+                  }
+                },
+                {
+                  "key": "net.peer.ip",
+                  "value": {
+                    "stringValue": "127.0.0.1"
+                  }
+                },
+                {
+                  "key": "net.peer.port",
+                  "value": {
+                    "intValue": "5000"
+                  }
+                },
+                {
+                  "key": "http.response_content_length_uncompressed",
+                  "value": {
+                    "intValue": "90"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "http.status_text",
+                  "value": {
+                    "stringValue": "OK"
+                  }
+                },
+                {
+                  "key": "http.flavor",
+                  "value": {
+                    "stringValue": "1.1"
+                  }
+                },
+                {
+                  "key": "net.transport",
+                  "value": {
+                    "stringValue": "ip_tcp"
+                  }
+                }
+              ],
+              "status": {}
+            },
+            {
+              "traceId": "4ed8a93824baec0e31e9a6b7575f4e84",
+              "spanId": "bfb01c0a6d7f7f3c",
+              "parentSpanId": "",
+              "name": "GET /api/proxy-quote",
+              "kind": 2,
+              "startTimeUnixNano": "1771787885764000000",
+              "endTimeUnixNano": "1771787885873670669",
+              "attributes": [
+                {
+                  "key": "http.url",
+                  "value": {
+                    "stringValue": "http://localhost:3001/api/proxy-quote"
+                  }
+                },
+                {
+                  "key": "http.host",
+                  "value": {
+                    "stringValue": "localhost:3001"
+                  }
+                },
+                {
+                  "key": "net.host.name",
+                  "value": {
+                    "stringValue": "localhost"
+                  }
+                },
+                {
+                  "key": "http.method",
+                  "value": {
+                    "stringValue": "GET"
+                  }
+                },
+                {
+                  "key": "http.scheme",
+                  "value": {
+                    "stringValue": "http"
+                  }
+                },
+                {
+                  "key": "http.target",
+                  "value": {
+                    "stringValue": "/api/proxy-quote"
+                  }
+                },
+                {
+                  "key": "http.user_agent",
+                  "value": {
+                    "stringValue": "curl/8.5.0"
+                  }
+                },
+                {
+                  "key": "http.flavor",
+                  "value": {
+                    "stringValue": "1.1"
+                  }
+                },
+                {
+                  "key": "net.transport",
+                  "value": {
+                    "stringValue": "ip_tcp"
+                  }
+                },
+                {
+                  "key": "net.host.ip",
+                  "value": {
+                    "stringValue": "::1"
+                  }
+                },
+                {
+                  "key": "net.host.port",
+                  "value": {
+                    "intValue": "3001"
+                  }
+                },
+                {
+                  "key": "net.peer.ip",
+                  "value": {
+                    "stringValue": "::1"
+                  }
+                },
+                {
+                  "key": "net.peer.port",
+                  "value": {
+                    "intValue": "50504"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "http.status_text",
+                  "value": {
+                    "stringValue": "OK"
+                  }
+                },
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/api/proxy-quote"
+                  }
+                }
+              ],
+              "status": {}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
