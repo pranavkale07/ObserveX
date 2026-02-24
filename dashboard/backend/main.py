@@ -116,10 +116,16 @@ class SQLiteStorage(TelemetryStorage):
     async def get_metrics(self, service: str, metric_type: str, limit: int = 60):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM metrics WHERE service = ? AND metric_type = ? ORDER BY id DESC LIMIT ?",
-                (service, metric_type, limit)
-            )
+            if service == "All Services":
+                cursor = await db.execute(
+                    "SELECT * FROM metrics WHERE metric_type = ? ORDER BY id DESC LIMIT ?",
+                    (metric_type, limit)
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT * FROM metrics WHERE service = ? AND metric_type = ? ORDER BY id DESC LIMIT ?",
+                    (service, metric_type, limit)
+                )
             rows = await cursor.fetchall()
             return [dict(row) for row in reversed(rows)]
 
@@ -153,7 +159,7 @@ async def startup():
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash-lite')
 else:
     logger.warning("GEMINI_API_KEY not set. AI RCA will be unavailable.")
     model = None

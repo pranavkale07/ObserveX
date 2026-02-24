@@ -18,5 +18,5 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=$COLLECTOR_ENDPOINT
 export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
 
 # Run the application with auto-instrumentation
-opentelemetry-instrument \
+/home/deadiu/BE_Project/venv/bin/opentelemetry-instrument \
     "$@"

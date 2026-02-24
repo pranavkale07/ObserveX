@@ -26,7 +26,7 @@ processors:
 exporters:
   rabbitmq/logs:
     connection:
-      endpoint: "amqp://172.17.0.1:5672"
+      endpoint: "amqp://172.31.53.219:5672"
       auth:
         plain:
           username: "telemetry"
@@ -39,7 +39,7 @@ exporters:
 
   rabbitmq/metrics:
     connection:
-      endpoint: "amqp://172.17.0.1:5672"
+      endpoint: "amqp://172.31.53.219:5672"
       auth:
         plain:
           username: "telemetry"
@@ -52,7 +52,7 @@ exporters:
 
   rabbitmq/traces:
     connection:
-      endpoint: "amqp://172.17.0.1:5672"
+      endpoint: "amqp://172.31.53.219:5672"
       auth:
         plain:
           username: "telemetry"

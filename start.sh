@@ -30,28 +30,28 @@ except Exception as e:
 
 echo "🧠 [3/6] Starting Dashboard Backend..."
 cd /home/deadiu/BE_Project/dashboard/backend
-# Kill old instances
-ps aux | grep "python main.py" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true
-nohup /home/deadiu/BE_Project/stream-processor/venv/bin/python main.py > backend_p5.log 2>&1 &
+# Kill old instances (specific to this directory)
+pkill -9 -f "/home/deadiu/BE_Project/dashboard/backend/main.py" || true
+nohup /home/deadiu/BE_Project/stream-processor/venv/bin/python /home/deadiu/BE_Project/dashboard/backend/main.py > backend_p5.log 2>&1 &
 echo "✅ Dashboard Backend started on port 8000."
 
 echo "🌊 [4/6] Starting Bytewax Stream Processor..."
 cd /home/deadiu/BE_Project/stream-processor
 # Kill old instances
-ps aux | grep "bytewax.run" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true
+pkill -9 -f "bytewax.run dataflow:flow" || true
 nohup ./venv/bin/python -m bytewax.run dataflow:flow > bytewax_p5.log 2>&1 &
 echo "✅ Bytewax Stream Processor active."
 
 echo "🏭 [5/6] Starting Instrumented Microservices..."
 # API Gateway
 cd /home/deadiu/BE_Project/microservices/api-gateway
-ps aux | grep "node index.js" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true
-OTEL_SERVICE_NAME=api-gateway /home/deadiu/BE_Project/instrumentation/node-wrapper/run_instrumented.sh node index.js > gateway.log 2>&1 &
+pkill -9 -f "/home/deadiu/BE_Project/microservices/api-gateway/index.js" || true
+OTEL_SERVICE_NAME=api-gateway /home/deadiu/BE_Project/instrumentation/node-wrapper/run_instrumented.sh node /home/deadiu/BE_Project/microservices/api-gateway/index.js > gateway.log 2>&1 &
 
 # Quote Service
 cd /home/deadiu/BE_Project/microservices/quote-service
-ps aux | grep "python main.py" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true
-OTEL_SERVICE_NAME=python-service /home/deadiu/BE_Project/instrumentation/python-wrapper/run_instrumented.sh /home/deadiu/BE_Project/venv/bin/python main.py > quote_service.log 2>&1 &
+pkill -9 -f "/home/deadiu/BE_Project/microservices/quote-service/main.py" || true
+OTEL_SERVICE_NAME=python-service /home/deadiu/BE_Project/instrumentation/python-wrapper/run_instrumented.sh /home/deadiu/BE_Project/venv/bin/python /home/deadiu/BE_Project/microservices/quote-service/main.py > quote_service.log 2>&1 &
 echo "✅ Microservices started with Auto-Instrumentation."
 
 echo "🚦 [6/6] Triggering Baseline Traffic..."

@@ -55,7 +55,7 @@ class RabbitPartition(StatelessSourcePartition):
                     arguments={"x-stream-offset": "first"},
                     inactivity_timeout=0.5 # Increased timeout slightly for stability
                 )
-                logger.info(f"Setup complete for {self._queue_name}")
+                print(f"DEBUG [RabbitSource] setup complete for {self._queue_name}"); logger.info(f"Setup complete for {self._queue_name}")
                 self._backoff = 1.0 # Reset backoff on success
             except Exception as e:
                 logger.error(f"Failed to setup RabbitMQ connection for {self._queue_name}: {e}")
@@ -73,7 +73,7 @@ class RabbitPartition(StatelessSourcePartition):
             result = next(self._iterator)
             method_frame, header_frame, body = result
             
-            if method_frame:
+            if method_frame: print(f"DEBUG [RabbitSource] GOT MESSAGE: {len(body)} bytes");
                 # Acknowledge immediately - Stream queues ignore nack/reject
                 self._channel.basic_ack(method_frame.delivery_tag)
                 try:
