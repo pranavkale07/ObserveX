@@ -155,11 +155,26 @@ export default function App() {
       (selectedService === "All Services" || m.service === selectedService) &&
       (m.metric_type === metricType)
     );
-    return filtered.slice(-30).map((m, i) => ({
-      time: i,
-      val: m.value
-    }));
+    return filtered.slice(-30).map((m) => {
+      const ts = new Date(m.timestamp);
+      return {
+        // Human-readable timestamp for the X axis / tooltip
+        time: ts.toLocaleTimeString(),
+        // Raw numeric timestamp (ms) if needed later
+        ts: ts.getTime(),
+        val: m.value
+      };
+    });
   }, [metrics, selectedService, monitoringMode]);
+
+  const chartLabel = useMemo(() => {
+    const metricType = getMetricTypeForMode(monitoringMode);
+    if (metricType === "redaction_count") {
+      return "Security Redaction Count Over Time";
+    }
+    // Default is p99_latency in milliseconds
+    return "P99 Latency (ms) Over Time";
+  }, [monitoringMode]);
 
   // Sync metrics when mode/service changes
   useEffect(() => {
@@ -286,11 +301,13 @@ export default function App() {
           <div className="flex justify-between items-center mb-6">
             <h3 className="text-sm font-bold flex items-center gap-2 text-slate-300">
               <BarChart3 className="w-4 h-4 text-indigo-400" />
-              Latency Distribution (p50, p90, p99)
+              {chartLabel}
             </h3>
             <div className="flex gap-2 text-[10px] text-slate-500">
-              <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-indigo-500" /> P99</span>
-              <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-orange-500" /> P90</span>
+              <span className="flex items-center gap-1">
+                <div className="w-2 h-2 rounded-full bg-indigo-500" />
+                {getMetricTypeForMode(monitoringMode) === "redaction_count" ? "Redactions" : "P99 Latency (ms)"}
+              </span>
             </div>
           </div>
           <div className="h-64 mt-4">
@@ -303,7 +320,13 @@ export default function App() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
-                <XAxis dataKey="time" hide />
+                <XAxis
+                  dataKey="time"
+                  stroke="#475569"
+                  fontSize={10}
+                  tickLine={false}
+                  axisLine={false}
+                />
                 <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
                 <Tooltip
                   contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }}
