@@ -41,6 +41,11 @@ class TelemetryStorage(ABC):
     async def save_metric(self, metric: Dict): pass
     @abstractmethod
     async def get_metrics(self, service: str, metric_type: str, limit: int = 60): pass
+    @abstractmethod
+    async def save_log(self, log: Dict): pass
+    @abstractmethod
+    async def get_logs(self, service: Optional[str] = None, severity: Optional[str] = None,
+                       trace_id: Optional[str] = None, limit: int = 100): pass
 
 class SQLiteStorage(TelemetryStorage):
     def __init__(self, db_path="telemetry.db"):
@@ -78,6 +83,20 @@ class SQLiteStorage(TelemetryStorage):
                     timestamp TEXT
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trace_id TEXT,
+                    span_id TEXT,
+                    service_name TEXT,
+                    body TEXT,
+                    severity TEXT,
+                    timestamp TEXT
+                )
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_service ON logs(service_name)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_trace ON logs(trace_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_severity ON logs(severity)")
             await db.commit()
 
     async def save_alert(self, alert: Dict):
@@ -148,6 +167,45 @@ class SQLiteStorage(TelemetryStorage):
                 return d
             return None
 
+    async def save_log(self, log: Dict):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO logs (trace_id, span_id, service_name, body, severity, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (log.get("trace_id", ""), log.get("span_id", ""), log["service_name"],
+                 log["body"], log.get("severity", "INFO"), log["timestamp"])
+            )
+            # Enforce retention: keep only the last 1000 logs
+            await db.execute("""
+                DELETE FROM logs WHERE id NOT IN (
+                    SELECT id FROM logs ORDER BY id DESC LIMIT 1000
+                )
+            """)
+            await db.commit()
+
+    async def get_logs(self, service: Optional[str] = None, severity: Optional[str] = None,
+                       trace_id: Optional[str] = None, limit: int = 100):
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            query = "SELECT * FROM logs WHERE 1=1"
+            params = []
+
+            if service and service != "All Services":
+                query += " AND service_name = ?"
+                params.append(service)
+            if severity and severity != "All":
+                query += " AND severity = ?"
+                params.append(severity)
+            if trace_id:
+                query += " AND trace_id = ?"
+                params.append(trace_id)
+
+            query += " ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+
+            cursor = await db.execute(query, params)
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
 storage = SQLiteStorage()
 
 @app.on_event("startup")
@@ -191,6 +249,14 @@ class MetricUpdate(BaseModel):
     service: str
     metric_type: str
     value: float
+    timestamp: str
+
+class LogEvent(BaseModel):
+    trace_id: str = ""
+    span_id: str = ""
+    service_name: str
+    body: str
+    severity: str = "INFO"
     timestamp: str
 
 # --- REAL-TIME HUB ---
@@ -255,6 +321,18 @@ async def get_trace(trace_id: str):
 @app.get("/api/metrics/{service}/{metric_type}")
 async def get_metrics_ts(service: str, metric_type: str):
     return await storage.get_metrics(service, metric_type)
+
+@app.post("/api/logs")
+async def receive_log(event: LogEvent):
+    event_dict = event.dict()
+    await storage.save_log(event_dict)
+    return {"status": "ok"}
+
+@app.get("/api/logs")
+async def get_logs(service: Optional[str] = None, severity: Optional[str] = None,
+                   trace_id: Optional[str] = None, limit: int = 100):
+    return await storage.get_logs(service=service, severity=severity,
+                                   trace_id=trace_id, limit=limit)
 
 @app.post("/api/rca/{trace_id}")
 async def analyze_trace(trace_id: str, trace_data: Dict):

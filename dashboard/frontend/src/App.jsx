@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Activity, AlertTriangle, Cpu, Globe, RefreshCcw, Zap, Search, Brain, X,
-  Server, Shield, Box, LayoutPanelLeft, ChevronRight, BarChart3, Clock3
+  Server, Shield, Box, LayoutPanelLeft, ChevronRight, BarChart3, Clock3, FileText
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { clsx } from 'clsx';
@@ -24,9 +24,13 @@ export default function App() {
   const [anomaliesOnly, setAnomaliesOnly] = useState(false);
   const [autoCorrelation, setAutoCorrelation] = useState(true);
 
+  const [traceContext, setTraceContext] = useState(null);
+  const [traceLogs, setTraceLogs] = useState([]);
+  const [traceLogsLoading, setTraceLogsLoading] = useState(false);
+
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState(null);
-  const [activeTab, setActiveTab] = useState("AI Analysis");
+  const [activeTab, setActiveTab] = useState("Traces");
   const [status, setStatus] = useState("connecting");
   const ws = useRef(null);
 
@@ -78,9 +82,11 @@ export default function App() {
 
   const runRCA = async (alert) => {
     setSelectedTrace(alert);
-    setIsAnalyzing(true);
+    setIsAnalyzing(false);
     setAnalysis(null);
-    setActiveTab("AI Analysis"); // Default to AI Analysis per requirement
+    setTraceContext(null);
+    setTraceLogs([]);
+    setActiveTab("Traces");
     try {
       // 1. Fetch FULL trace inventory for waterfall
       const traceRes = await fetch(`${BACKEND_URL}/api/traces/${alert.trace_id}`);
@@ -103,24 +109,43 @@ export default function App() {
         spans: normalizedSpans
       };
 
-      // 2. Run AI Analysis
-      const response = await fetch(`${BACKEND_URL}/api/rca/${alert.trace_id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(context)
-      });
-      const data = await response.json();
-      setAnalysis({ ...data, traceData: context });
+      setTraceContext(context);
+
+      // 2. Fetch correlated logs for this trace
+      const logRes = await fetch(`${BACKEND_URL}/api/logs?trace_id=${alert.trace_id}`);
+      const logData = await logRes.json();
+      setTraceLogs(logData);
     } catch (err) {
       console.error("RCA Failed:", err);
-      // Fallback if full trace not yet in DB
-      setAnalysis({
-        root_cause: "Could not reconstruct full trace yet. Check back in 5s.",
-        suggested_fixes: ["Wait for Bytewax sync", "Verify trace_inventory table"],
-        risk_prediction: "N/A"
-      });
     } finally {
-      setIsAnalyzing(false);
+      setTraceLogsLoading(false);
+    }
+  };
+
+  const handleTabClick = async (tab) => {
+    setActiveTab(tab);
+
+    if (tab === "AI Analysis" && traceContext && !analysis && !isAnalyzing) {
+      setIsAnalyzing(true);
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/rca/${traceContext.trace_id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(traceContext)
+        });
+        const data = await response.json();
+        setAnalysis({ ...data, traceData: traceContext });
+      } catch (err) {
+        console.error("AI Analysis Failed:", err);
+        setAnalysis({
+          root_cause: "AI analysis is currently unavailable.",
+          suggested_fixes: ["Check GEMINI_API_KEY configuration", "Try again in a few moments"],
+          risk_prediction: "N/A",
+          traceData: traceContext
+        });
+      } finally {
+        setIsAnalyzing(false);
+      }
     }
   };
 
@@ -327,10 +352,10 @@ export default function App() {
 
                 {/* Tabs */}
                 <div className="flex gap-6 border-b border-slate-800 mb-6">
-                  {["Overview", "Traces", "Metrics", "AI Analysis"].map(tab => (
+                  {["Overview", "Traces", "Logs", "Metrics", "AI Analysis"].map(tab => (
                     <button
                       key={tab}
-                      onClick={() => setActiveTab(tab)}
+                      onClick={() => handleTabClick(tab)}
                       className={cn(
                         "pb-3 text-xs font-bold transition-all relative",
                         activeTab === tab ? "text-white" : "text-slate-500 hover:text-slate-300"
@@ -417,14 +442,14 @@ export default function App() {
                         <button className="px-6 py-2 bg-white text-slate-950 text-xs font-black uppercase tracking-tight rounded-lg hover:bg-slate-200 transition-colors">Create Ticket</button>
                       </div>
                     </div>
-                  ) : activeTab === "Traces" && analysis ? (
+                  ) : activeTab === "Traces" && traceContext ? (
                     <div className="space-y-4 animate-in fade-in">
                       <div className="flex justify-between items-center mb-4">
                         <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Detailed Waterfall</label>
-                        <span className="text-[10px] text-slate-500 font-mono">Total Duration: {analysis.traceData.duration_ms.toFixed(2)}ms</span>
+                        <span className="text-[10px] text-slate-500 font-mono">Total Duration: {traceContext.duration_ms.toFixed(2)}ms</span>
                       </div>
                       <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                        {analysis.traceData.spans.map((span, i) => (
+                        {traceContext.spans.map((span, i) => (
                           <div key={i} className="group">
                             <div className="flex justify-between text-[10px] mb-1">
                               <span className="text-slate-300 font-bold">{span.service} <span className="text-slate-500 font-medium">| {span.name}</span></span>
@@ -437,14 +462,34 @@ export default function App() {
                                   span.type === "API" ? "bg-indigo-500" : span.type === "DATABASE" ? "bg-rose-500 shadow-[0_0_5px_rgba(244,63,94,0.5)]" : "bg-emerald-500"
                                 )}
                                 style={{
-                                  left: `${(span.start / analysis.traceData.duration_ms) * 100}%`,
-                                  width: `${(span.duration / analysis.traceData.duration_ms) * 100}%`,
+                                  left: `${(span.start / traceContext.duration_ms) * 100}%`,
+                                  width: `${(span.duration / traceContext.duration_ms) * 100}%`,
                                   minWidth: '2px'
                                 }}
                               />
                             </div>
                           </div>
                         ))}
+                      </div>
+                    </div>
+                  ) : activeTab === "Logs" ? (
+                    <div className="space-y-4 animate-in fade-in">
+                      <div className="flex justify-between items-center mb-2">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                          <FileText className="w-3 h-3" /> Correlated Logs
+                        </label>
+                        <span className="text-[10px] text-slate-500 font-mono">{traceLogs.length} log{traceLogs.length !== 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="max-h-[350px] overflow-y-auto pr-2 custom-scrollbar space-y-1">
+                        {traceLogs.length === 0 ? (
+                          <div className="text-center py-12 text-slate-600 text-xs">
+                            {traceLogsLoading ? "Loading logs..." : "No logs found for this trace"}
+                          </div>
+                        ) : (
+                          traceLogs.map((log, idx) => (
+                            <LogRow key={idx} log={log} />
+                          ))
+                        )}
                       </div>
                     </div>
                   ) : (
@@ -537,6 +582,43 @@ function Toggle({ label, active, onClick }) {
           active ? "left-4.5" : "left-0.5"
         )} />
       </div>
+    </div>
+  );
+}
+
+function LogRow({ log, onTraceClick }) {
+  const severityColors = {
+    DEBUG: "text-slate-500 bg-slate-500/10",
+    INFO: "text-blue-400 bg-blue-400/10",
+    WARNING: "text-amber-400 bg-amber-400/10",
+    WARN: "text-amber-400 bg-amber-400/10",
+    ERROR: "text-rose-400 bg-rose-400/10",
+    FATAL: "text-red-500 bg-red-500/10 font-black",
+  };
+  const colorClass = severityColors[log.severity] || severityColors.INFO;
+
+  return (
+    <div className="flex items-start gap-3 py-1.5 px-2 rounded-md hover:bg-slate-800/40 transition-colors text-[11px] font-mono group">
+      <span className="text-slate-600 flex-shrink-0 w-20 tabular-nums">
+        {new Date(log.timestamp).toLocaleTimeString()}
+      </span>
+      <span className={cn("flex-shrink-0 w-14 text-center rounded px-1 py-0.5 text-[9px] font-black uppercase", colorClass)}>
+        {log.severity}
+      </span>
+      <span className="text-indigo-400 flex-shrink-0 w-28 truncate">
+        {log.service_name}
+      </span>
+      <span className="text-slate-300 flex-1 truncate" title={log.body}>
+        {log.body}
+      </span>
+      {log.trace_id && onTraceClick && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onTraceClick(); }}
+          className="flex-shrink-0 text-[9px] text-indigo-400 hover:text-indigo-300 opacity-0 group-hover:opacity-100 transition-opacity border border-indigo-500/30 rounded px-1.5 py-0.5"
+        >
+          Trace
+        </button>
+      )}
     </div>
   );
 }

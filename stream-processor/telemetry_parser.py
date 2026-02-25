@@ -41,11 +41,17 @@ def parse_log(log_payload):
         service_name = extract_resource_attr(rl.get("resource", {}), "service.name")
         for sl in rl.get("scopeLogs", []):
             for log in sl.get("logRecords", []):
+                time_nano = int(log.get("timeUnixNano", 0))
+                timestamp = datetime.fromtimestamp(
+                    time_nano / 1_000_000_000, tz=timezone.utc
+                ).isoformat() if time_nano else datetime.now(timezone.utc).isoformat()
+
                 results.append({
-                    "trace_id": log.get("traceId"),
-                    "span_id": log.get("spanId"),
+                    "trace_id": log.get("traceId", ""),
+                    "span_id": log.get("spanId", ""),
                     "service_name": service_name,
                     "body": log.get("body", {}).get("stringValue", ""),
-                    "severity": log.get("severityText")
+                    "severity": log.get("severityText", "INFO"),
+                    "timestamp": timestamp
                 })
     return results

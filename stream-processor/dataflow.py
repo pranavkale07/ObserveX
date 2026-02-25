@@ -1,6 +1,5 @@
 import os
 import logging
-import math
 import httpx
 from datetime import datetime, timedelta, timezone
 from bytewax import operators as op
@@ -96,24 +95,39 @@ def send_to_dashboard(path, payload):
     except Exception as e:
         logger.error(f"Failed to send to dashboard: {e}")
 
+# --- Log Buffer for Anomaly Correlation ---
+# Logs are buffered by trace_id in memory. When a trace window closes:
+#   - If anomalous: flush buffered logs to the dashboard backend
+#   - If normal: discard the buffered logs
+log_buffer = {}  # trace_id -> list of log dicts
+LOG_BUFFER_MAX_PER_TRACE = 50
+
 def process_full_trace(item):
     trace_id, (metadata, stats) = item
     if not stats["spans"]: return item
-    
-    # 1. Send to Trace Inventory (Forensics)
+
+    # 1. Send to Trace Inventory (Forensics) + correlated logs
     if stats["has_anomaly"]:
         send_to_dashboard("/api/traces", {
             "trace_id": trace_id,
             "duration_ms": stats["duration_ms"],
             "spans": stats["spans"]
         })
-    
+        # Flush correlated logs for this anomalous trace
+        correlated_logs = log_buffer.pop(trace_id, [])
+        for log in correlated_logs:
+            send_to_dashboard("/api/logs", log)
+        logger.info(f"Flushed {len(correlated_logs)} correlated logs for anomalous trace {trace_id[:12]}")
+    else:
+        # Discard buffered logs for non-anomalous traces
+        log_buffer.pop(trace_id, None)
+
     # 2. Extract and emit Service Metrics
     services_seen = set(s["service"] for s in stats["spans"])
     for svc in services_seen:
         svc_spans = [s for s in stats["spans"] if s["service"] == svc]
         avg_latency = sum(s["duration_ms"] for s in svc_spans) / len(svc_spans)
-        
+
         # Throughput
         send_to_dashboard("/api/metrics", {
             "service": svc,
@@ -128,7 +142,7 @@ def process_full_trace(item):
             "value": float(avg_latency),
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
-        
+
         # Alerts if anomaly
         if any(s["is_anomaly"] for s in svc_spans):
             send_to_dashboard("/api/alerts", {
@@ -146,22 +160,42 @@ def process_full_trace(item):
 
 op.map("emit-trace-data", trace_reconstructor.down, process_full_trace)
 
-# Redaction Logic stays separate (stateful_map doesn't conflict with windows)
-def handle_redaction(stats, log):
-    if stats is None: stats = 0
+# --- Log Buffering + Redaction Logic ---
+def handle_log_with_redaction(state, log):
+    """Counts redactions and buffers logs by trace_id for anomaly correlation."""
+    if state is None:
+        state = {"redaction_count": 0}
+
+    # 1. Redaction counting (existing logic preserved)
     body = log.get("body", "")
     if any(p in body for p in ["[REDACTED_EMAIL]", "[REDACTED_AUTHOR]"]):
-        stats += 1
-        if stats % 5 == 0:
+        state["redaction_count"] += 1
+        if state["redaction_count"] % 5 == 0:
             send_to_dashboard("/api/metrics", {
                 "service": log.get("service_name", "unknown"),
                 "metric_type": "redaction_count",
-                "value": float(stats),
+                "value": float(state["redaction_count"]),
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
-    return (stats, stats)
+
+    # 2. Buffer logs by trace_id (only if trace_id present)
+    trace_id = log.get("trace_id", "")
+    if trace_id:
+        if trace_id not in log_buffer:
+            log_buffer[trace_id] = []
+        if len(log_buffer[trace_id]) < LOG_BUFFER_MAX_PER_TRACE:
+            log_buffer[trace_id].append({
+                "trace_id": trace_id,
+                "span_id": log.get("span_id", ""),
+                "service_name": log.get("service_name", "unknown"),
+                "body": body,
+                "severity": log.get("severity", "INFO"),
+                "timestamp": log.get("timestamp", datetime.now(timezone.utc).isoformat())
+            })
+
+    return (state, state)
 
 log_keyed = op.key_on("key-log-svc", parsed_logs, lambda x: x.get("service_name", "unknown"))
-op.stateful_map("redaction-counter", log_keyed, handle_redaction)
+op.stateful_map("log-handler", log_keyed, handle_log_with_redaction)
 
 op.output("stdout", trace_reconstructor.down, StdOutSink())
