@@ -7,5 +7,9 @@ services:
     command: ["--config=/etc/otelcol-config.yaml"]
     volumes:
       - ./config.yaml:/etc/otelcol-config.yaml
-    network_mode: "host"
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: always

@@ -73,7 +73,8 @@ class RabbitPartition(StatelessSourcePartition):
             result = next(self._iterator)
             method_frame, header_frame, body = result
             
-            if method_frame: print(f"DEBUG [RabbitSource] GOT MESSAGE: {len(body)} bytes");
+            if method_frame: 
+                print(f"DEBUG [RabbitSource] GOT MESSAGE: {len(body)} bytes")
                 # Acknowledge immediately - Stream queues ignore nack/reject
                 self._channel.basic_ack(method_frame.delivery_tag)
                 try:
