@@ -3,8 +3,11 @@
 # ObserverAI Master Startup Script
 # This script starts the entire forensics-ready telemetry stack.
 
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV="$PROJECT_DIR/venv/bin"
+
 echo "🚀 [1/6] Starting Infrastructure (OTel Collector)..."
-cd /home/deadiu/BE_Project/infra/otel-collector
+cd "$PROJECT_DIR/infra/otel-collector"
 docker compose down
 docker compose up -d
 
@@ -13,11 +16,11 @@ echo "🐇 [2/6] Configuring Local RabbitMQ..."
 sudo rabbitmq-plugins enable rabbitmq_stream rabbitmq_management || echo "⚠️  Could not enable plugins via sudo. Please ensure rabbitmq_stream is enabled manually."
 
 # Declare the telemetry stream queue via Python AMQP
-/home/deadiu/BE_Project/stream-processor/venv/bin/python -c "
+"$VENV/python" -c "
 import pika
 try:
     connection = pika.BlockingConnection(pika.ConnectionParameters(
-        host='172.17.0.1',
+        host='localhost',
         credentials=pika.PlainCredentials('telemetry', 'telemetry_password')
     ))
     channel = connection.channel()
@@ -29,32 +32,31 @@ except Exception as e:
 "
 
 echo "🧠 [3/6] Starting Dashboard Backend..."
-cd /home/deadiu/BE_Project/dashboard/backend
-# Kill old instances (specific to this directory)
-pkill -9 -f "/home/deadiu/BE_Project/dashboard/backend/main.py" || true
-nohup /home/deadiu/BE_Project/stream-processor/venv/bin/python /home/deadiu/BE_Project/dashboard/backend/main.py > backend_p5.log 2>&1 &
+cd "$PROJECT_DIR/dashboard/backend"
+pkill -9 -f "dashboard/backend/main.py" || true
+nohup "$VENV/python" "$PROJECT_DIR/dashboard/backend/main.py" > backend_p5.log 2>&1 &
 echo "✅ Dashboard Backend started on port 8000."
 
 echo "🌊 [4/6] Starting Bytewax Stream Processor..."
-cd /home/deadiu/BE_Project/stream-processor
-# Kill old instances
+cd "$PROJECT_DIR/stream-processor"
 pkill -9 -f "bytewax.run dataflow:flow" || true
-nohup ./venv/bin/python -m bytewax.run dataflow:flow > bytewax_p5.log 2>&1 &
+nohup "$VENV/python" -m bytewax.run dataflow:flow > bytewax_p5.log 2>&1 &
 echo "✅ Bytewax Stream Processor active."
 
 echo "🏭 [5/6] Starting Instrumented Microservices..."
 # API Gateway
-cd /home/deadiu/BE_Project/microservices/api-gateway
-pkill -9 -f "/home/deadiu/BE_Project/microservices/api-gateway/index.js" || true
-OTEL_SERVICE_NAME=api-gateway /home/deadiu/BE_Project/instrumentation/node-wrapper/run_instrumented.sh node /home/deadiu/BE_Project/microservices/api-gateway/index.js > gateway.log 2>&1 &
+cd "$PROJECT_DIR/microservices/api-gateway"
+pkill -9 -f "microservices/api-gateway/index.js" || true
+OTEL_SERVICE_NAME=api-gateway "$PROJECT_DIR/instrumentation/node-wrapper/run_instrumented.sh" node "$PROJECT_DIR/microservices/api-gateway/index.js" > gateway.log 2>&1 &
 
 # Quote Service
-cd /home/deadiu/BE_Project/microservices/quote-service
-pkill -9 -f "/home/deadiu/BE_Project/microservices/quote-service/main.py" || true
-OTEL_SERVICE_NAME=python-service /home/deadiu/BE_Project/instrumentation/python-wrapper/run_instrumented.sh /home/deadiu/BE_Project/venv/bin/python /home/deadiu/BE_Project/microservices/quote-service/main.py > quote_service.log 2>&1 &
+cd "$PROJECT_DIR/microservices/quote-service"
+pkill -9 -f "microservices/quote-service/main.py" || true
+OTEL_SERVICE_NAME=python-service "$PROJECT_DIR/instrumentation/python-wrapper/run_instrumented.sh" "$VENV/python" "$PROJECT_DIR/microservices/quote-service/main.py" > quote_service.log 2>&1 &
 echo "✅ Microservices started with Auto-Instrumentation."
 
 echo "🚦 [6/6] Triggering Baseline Traffic..."
+sleep 3  # Wait for services to start
 for i in {1..20}; do
   curl -s http://localhost:3001/api/proxy-slow-quote > /dev/null
   curl -s http://localhost:3001/api/proxy-n-plus-1 > /dev/null
