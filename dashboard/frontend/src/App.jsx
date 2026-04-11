@@ -137,10 +137,12 @@ export default function App() {
 
       setTraceContext(context);
 
-      // 2. Fetch correlated logs for this trace
-      const logRes = await fetch(`${BACKEND_URL}/api/logs?trace_id=${alert.trace_id}`);
-      const logData = await logRes.json();
-      setTraceLogs(logData);
+      // 2. Fetch correlated logs for this trace (when auto-correlation is on)
+      if (autoCorrelation) {
+        const logRes = await fetch(`${BACKEND_URL}/api/logs?trace_id=${alert.trace_id}`);
+        const logData = await logRes.json();
+        setTraceLogs(logData);
+      }
     } catch (err) {
       console.error("RCA Failed:", err);
     } finally {
