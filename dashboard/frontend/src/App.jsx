@@ -86,6 +86,7 @@ export default function App() {
     setAnalysis(null);
     setTraceContext(null);
     setTraceLogs([]);
+    setTraceLogsLoading(true);
     setActiveTab("Traces");
     try {
       // 1. Fetch FULL trace inventory for waterfall
@@ -208,7 +209,7 @@ export default function App() {
                   <Server className="w-4 h-4" />
                   {svc}
                 </div>
-                {selectedService === svc && <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 shadow-[0_0_8px_indigo]" />}
+                {selectedService === svc && <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]" />}
               </button>
             ))}
           </div>
@@ -385,7 +386,7 @@ export default function App() {
                       )}
                     >
                       {tab}
-                      {activeTab === tab && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-500 shadow-[0_0_8px_indigo]" />}
+                      {activeTab === tab && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]" />}
                     </button>
                   ))}
                 </div>
@@ -432,7 +433,7 @@ export default function App() {
                         <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
                           <h6 className="text-[9px] font-black text-slate-500 uppercase mb-3">Timeline</h6>
                           <div className="h-2 bg-slate-800 rounded-full relative overflow-hidden">
-                            <div className="absolute left-1/4 w-1/2 h-full bg-rose-500 shadow-[0_0_10px_rose]" />
+                            <div className="absolute left-1/4 w-1/2 h-full bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)]" />
                           </div>
                           <div className="flex justify-between text-[8px] text-slate-600 mt-2 font-mono uppercase">
                             <span>14:00</span>
@@ -447,7 +448,7 @@ export default function App() {
                             <div className="w-1 h-px bg-slate-700" />
                             <div className="w-8 h-8 rounded bg-amber-500/20 border border-amber-500/50 flex items-center justify-center text-[10px] font-bold">API</div>
                             <div className="w-1 h-px bg-slate-700" />
-                            <div className="w-6 h-6 rounded bg-rose-500 border border-rose-500 flex items-center justify-center text-[8px] font-bold shadow-[0_0_8px_rose]">DB</div>
+                            <div className="w-6 h-6 rounded bg-rose-500 border border-rose-500 flex items-center justify-center text-[8px] font-bold shadow-[0_0_8px_rgba(244,63,94,0.5)]">DB</div>
                           </div>
                         </div>
                         <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
@@ -541,7 +542,7 @@ export default function App() {
               {[40, 60, 45, 90, 55, 70, 40, 31, 25, 45, 65, 85].map((h, i) => (
                 <div key={i} className={cn(
                   "flex-1 rounded-t-sm transition-all duration-1000",
-                  h > 80 ? "bg-rose-500 shadow-[0_0_10px_rose]" : "bg-indigo-500/20 group-hover:bg-indigo-500/60"
+                  h > 80 ? "bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)]" : "bg-indigo-500/20 group-hover:bg-indigo-500/60"
                 )} style={{ height: `${h}%` }} />
               ))}
             </div>
@@ -577,15 +578,15 @@ function AnomalyRow({ item, onClick }) {
     >
       <div className="flex items-center gap-4">
         <div className="w-2 h-8 rounded-full bg-rose-500/20 flex items-center justify-center">
-          <div className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rose]" />
+          <div className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
         </div>
         <div>
           <div className="text-sm font-bold text-slate-200">{item.service} <span className="text-slate-500 font-medium">→ {item.route}</span></div>
-          <div className="text-[10px] text-slate-500 font-mono">#{item.trace_id.slice(0, 12)} • {new Date(item.timestamp).toLocaleTimeString()}</div>
+          <div className="text-[10px] text-slate-500 font-mono">#{(item.trace_id ?? "").slice(0, 12)} • {new Date(item.timestamp).toLocaleTimeString()}</div>
         </div>
       </div>
       <div className="text-right">
-        <div className="text-sm font-black text-rose-500">{item.duration_ms.toFixed(0)}ms</div>
+        <div className="text-sm font-black text-rose-500">{(item.duration_ms ?? 0).toFixed(0)}ms</div>
         <ChevronRight className="w-4 h-4 text-slate-600 group-hover:translate-x-1 transition-transform" />
       </div>
     </div>
@@ -602,7 +603,7 @@ function Toggle({ label, active, onClick }) {
       )}>
         <div className={cn(
           "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all shadow-sm",
-          active ? "left-4.5" : "left-0.5"
+          active ? "left-[18px]" : "left-0.5"
         )} />
       </div>
     </div>
@@ -646,6 +647,12 @@ function LogRow({ log, onTraceClick }) {
   );
 }
 
+const statCardColorMap = {
+  indigo: "text-indigo-400 bg-indigo-400/10",
+  rose: "text-rose-400 bg-rose-400/10",
+  emerald: "text-emerald-400 bg-emerald-400/10",
+};
+
 function StatCard({ label, value, trend, icon, color }) {
   return (
     <div className="bg-slate-900/40 border border-slate-800/50 p-6 rounded-2xl relative overflow-hidden group hover:border-slate-700 transition-all">
@@ -654,7 +661,7 @@ function StatCard({ label, value, trend, icon, color }) {
           <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{label}</div>
           <div className="text-2xl font-black text-white">{value}</div>
         </div>
-        <div className={cn("text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded", `text-${color}-400 bg-${color}-400/10`)}>
+        <div className={cn("text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded", statCardColorMap[color] || "text-slate-400 bg-slate-400/10")}>
           {trend}
         </div>
       </div>
