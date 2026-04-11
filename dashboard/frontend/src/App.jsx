@@ -32,27 +32,43 @@ export default function App() {
   const [analysis, setAnalysis] = useState(null);
   const [activeTab, setActiveTab] = useState("Traces");
   const [status, setStatus] = useState("connecting");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
   const ws = useRef(null);
+  const liveModeRef = useRef(liveMode);
+  const unmountedRef = useRef(false);
+
+  // Keep refs in sync
+  useEffect(() => { liveModeRef.current = liveMode; }, [liveMode]);
 
   // Load history and initialize WS
   useEffect(() => {
     fetchHistory();
     connectWS();
-    return () => ws.current?.close();
+    return () => {
+      unmountedRef.current = true;
+      if (ws.current) {
+        ws.current.onclose = null;
+        ws.current.close();
+      }
+    };
   }, []);
 
   const fetchHistory = async () => {
     try {
       const alertRes = await fetch(`${BACKEND_URL}/api/alerts`);
+      if (!alertRes.ok) throw new Error("Failed to fetch alerts");
       const alertData = await alertRes.json();
       setAnomalies(alertData);
 
       // Fetch metrics history for current service context
       const metricType = getMetricTypeForMode(monitoringMode);
       const metricRes = await fetch(`${BACKEND_URL}/api/metrics/${selectedService}/${metricType}`);
+      if (!metricRes.ok) throw new Error("Failed to fetch metrics");
       const metricData = await metricRes.json();
       setMetrics(metricData);
     } catch (err) { console.error(err); }
+    finally { setIsLoading(false); }
   };
 
   const getMetricTypeForMode = (mode) => {
@@ -62,21 +78,30 @@ export default function App() {
   };
 
   const connectWS = () => {
+    if (unmountedRef.current) return;
+    if (ws.current) {
+      ws.current.onclose = null;
+      ws.current.close();
+    }
     ws.current = new WebSocket(WS_URL);
     ws.current.onopen = () => setStatus("connected");
     ws.current.onclose = () => {
       setStatus("disconnected");
-      setTimeout(connectWS, 2000);
+      if (!unmountedRef.current) setTimeout(connectWS, 2000);
     };
+    ws.current.onerror = () => {};
     ws.current.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === "new_anomaly") {
-        setAnomalies(prev => [msg.data, ...prev].slice(0, 50));
-      } else if (msg.type === "metric_update") {
-        setMetrics(prev => [...prev, msg.data].slice(-60));
-      } else if (msg.type === "history") {
-        setAnomalies(msg.data);
-      }
+      if (!liveModeRef.current) return;
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "new_anomaly") {
+          setAnomalies(prev => [msg.data, ...prev].slice(0, 50));
+        } else if (msg.type === "metric_update") {
+          setMetrics(prev => [...prev, msg.data].slice(-60));
+        } else if (msg.type === "history") {
+          setAnomalies(msg.data);
+        }
+      } catch (err) { console.error("WS message parse error:", err); }
     };
   };
 
@@ -86,6 +111,7 @@ export default function App() {
     setAnalysis(null);
     setTraceContext(null);
     setTraceLogs([]);
+    setTraceLogsLoading(true);
     setActiveTab("Traces");
     try {
       // 1. Fetch FULL trace inventory for waterfall
@@ -111,10 +137,12 @@ export default function App() {
 
       setTraceContext(context);
 
-      // 2. Fetch correlated logs for this trace
-      const logRes = await fetch(`${BACKEND_URL}/api/logs?trace_id=${alert.trace_id}`);
-      const logData = await logRes.json();
-      setTraceLogs(logData);
+      // 2. Fetch correlated logs for this trace (when auto-correlation is on)
+      if (autoCorrelation) {
+        const logRes = await fetch(`${BACKEND_URL}/api/logs?trace_id=${alert.trace_id}`);
+        const logData = await logRes.json();
+        setTraceLogs(logData);
+      }
     } catch (err) {
       console.error("RCA Failed:", err);
     } finally {
@@ -176,6 +204,86 @@ export default function App() {
     return "P99 Latency (ms) Over Time";
   }, [monitoringMode]);
 
+  // Derived summary stats for StatCards (Phase 2: replace hardcoded values)
+  const summaryStats = useMemo(() => {
+    const latencies = metrics.filter(m => m.metric_type === "p99_latency").map(m => m.value);
+    const throughputs = metrics.filter(m => m.metric_type === "throughput").map(m => m.value);
+    const totalAnomalies = anomalies.filter(a => a.is_anomaly).length;
+    const totalAlerts = anomalies.length;
+
+    const throughputVal = throughputs.length > 0
+      ? throughputs.reduce((a, b) => a + b, 0).toFixed(0)
+      : "—";
+    const latencyVal = latencies.length > 0
+      ? latencies[latencies.length - 1].toFixed(0) + "ms"
+      : "—";
+    const errorRate = totalAlerts > 0
+      ? ((totalAnomalies / totalAlerts) * 100).toFixed(1) + "%"
+      : "0%";
+    const latencyTrend = latencies.length > 0 && latencies[latencies.length - 1] > 500
+      ? "Critical" : "Normal";
+    const throughputTrend = throughputs.length >= 2
+      ? ((throughputs[throughputs.length - 1] - throughputs[throughputs.length - 2]) >= 0 ? "+" : "") +
+        ((throughputs[throughputs.length - 1] - throughputs[throughputs.length - 2])).toFixed(0)
+      : "—";
+
+    return { throughput: throughputVal, p99: latencyVal, errorRate, latencyTrend, throughputTrend };
+  }, [metrics, anomalies]);
+
+  // Derive dynamic data for resource charts from metrics
+  const resourceChartData = useMemo(() => {
+    const throughputs = metrics.filter(m => m.metric_type === "throughput").map(m => m.value);
+    const latencies = metrics.filter(m => m.metric_type === "p99_latency").map(m => m.value);
+    // Normalize throughputs to percentage (0-100) based on max
+    const maxT = Math.max(...throughputs, 1);
+    const cpuBars = throughputs.slice(-12).map(v => Math.min(100, Math.round((v / maxT) * 80 + 10)));
+    // Build SVG path from latencies
+    const latSlice = latencies.slice(-10);
+    let memPath = "M0 15";
+    if (latSlice.length > 1) {
+      const maxL = Math.max(...latSlice, 1);
+      latSlice.forEach((v, i) => {
+        const x = (i / (latSlice.length - 1)) * 100;
+        const y = 20 - (v / maxL) * 18;
+        memPath += ` L ${x.toFixed(0)} ${y.toFixed(1)}`;
+      });
+    } else {
+      memPath = "M0 15 Q 20 18, 40 10 T 80 5 T 100 15";
+    }
+    return {
+      cpuBars: cpuBars.length > 0 ? cpuBars : [20, 30, 25, 40, 35, 30, 20, 25, 30, 35, 40, 30],
+      memPath,
+    };
+  }, [metrics]);
+
+  // Dynamic AI Insight from latest anomaly
+  const aiInsight = useMemo(() => {
+    if (anomalies.length === 0) return { text: "No active anomalies detected. System operating normally.", hasAnomaly: false };
+    const latest = anomalies[0];
+    return {
+      text: `Detected anomaly in ${latest.service} — ${(latest.duration_ms ?? 0).toFixed(0)}ms latency on ${latest.route}. Investigate for potential performance degradation.`,
+      hasAnomaly: true,
+      alert: latest,
+    };
+  }, [anomalies]);
+
+  // Filtered anomalies for search + anomaliesOnly toggle
+  const filteredAnomalies = useMemo(() => {
+    let filtered = anomalies;
+    if (anomaliesOnly) {
+      filtered = filtered.filter(a => a.is_anomaly);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      filtered = filtered.filter(a =>
+        (a.service || "").toLowerCase().includes(q) ||
+        (a.route || "").toLowerCase().includes(q) ||
+        (a.trace_id || "").toLowerCase().includes(q)
+      );
+    }
+    return filtered;
+  }, [anomalies, anomaliesOnly, searchQuery]);
+
   // Sync metrics when mode/service changes
   useEffect(() => {
     fetchHistory();
@@ -195,7 +303,7 @@ export default function App() {
         <nav className="space-y-4">
           <label className="text-[10px] uppercase font-black tracking-widest text-slate-500">Service Topology</label>
           <div className="space-y-1">
-            {["All Services", "api-gateway", "python-service", "node-service"].map(svc => (
+            {["All Services", "api-gateway", "python-service"].map(svc => (
               <button
                 key={svc}
                 onClick={() => setSelectedService(svc)}
@@ -208,7 +316,7 @@ export default function App() {
                   <Server className="w-4 h-4" />
                   {svc}
                 </div>
-                {selectedService === svc && <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 shadow-[0_0_8px_indigo]" />}
+                {selectedService === svc && <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]" />}
               </button>
             ))}
           </div>
@@ -222,17 +330,22 @@ export default function App() {
             <Toggle label="Auto-Correlation" active={autoCorrelation} onClick={() => setAutoCorrelation(!autoCorrelation)} />
           </div>
 
-          <div className="bg-indigo-600/10 border border-indigo-500/20 p-4 rounded-xl mt-6">
+          <div className={cn("border p-4 rounded-xl mt-6", aiInsight.hasAnomaly ? "bg-rose-600/10 border-rose-500/20" : "bg-indigo-600/10 border-indigo-500/20")}>
             <div className="flex items-center gap-2 mb-2">
-              <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-ping" />
-              <span className="text-[10px] uppercase font-black text-indigo-400 tracking-widest">AI Insight</span>
+              <div className={cn("w-1.5 h-1.5 rounded-full", aiInsight.hasAnomaly ? "bg-rose-500 animate-ping" : "bg-indigo-500")} />
+              <span className={cn("text-[10px] uppercase font-black tracking-widest", aiInsight.hasAnomaly ? "text-rose-400" : "text-indigo-400")}>AI Insight</span>
             </div>
             <p className="text-[11px] text-slate-300 leading-relaxed">
-              Detecting a 15% drift in latency across **python-service**. Possible database deadlock.
+              {aiInsight.text}
             </p>
-            <button className="w-full mt-3 py-2 bg-indigo-600 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-colors">
-              Investigate Root Cause
-            </button>
+            {aiInsight.hasAnomaly && (
+              <button
+                onClick={() => runRCA(aiInsight.alert)}
+                className="w-full mt-3 py-2 bg-indigo-600 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-colors"
+              >
+                Investigate Root Cause
+              </button>
+            )}
           </div>
         </div>
 
@@ -259,17 +372,15 @@ export default function App() {
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               <span className="text-[10px] font-black text-emerald-500 uppercase">Production</span>
             </div>
-            <select className="bg-transparent text-xs text-slate-400 font-medium focus:outline-none border-r border-slate-800 pr-4">
-              <option>Region: us-east-1</option>
-              <option>Region: eu-west-1</option>
-            </select>
           </div>
 
           <div className="flex-1 max-w-md mx-8 relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
               type="text"
-              placeholder="Search traces, logs, spans..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by service, route, or trace ID..."
               className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 pl-10 pr-4 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
             />
           </div>
@@ -279,10 +390,13 @@ export default function App() {
               <div className={cn("w-2 h-2 rounded-full", status === "connected" ? "bg-emerald-500 animate-pulse" : "bg-red-500")} />
               <span className="text-slate-400 uppercase font-black text-[9px]">{liveMode ? "Live" : "Paused"}</span>
             </div>
-            <button className="relative p-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors">
+            <button onClick={fetchHistory} className="relative p-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors" title="Refresh data">
               <RefreshCcw className="w-4 h-4" />
             </button>
-            <button className="flex items-center gap-2 px-4 py-2 bg-indigo-600 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-500/20">
+            <button
+              onClick={() => { if (anomalies.length > 0) runRCA(anomalies[0]); }}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-500/20"
+            >
               <Brain className="w-4 h-4" />
               AI Assistant
             </button>
@@ -291,9 +405,9 @@ export default function App() {
 
         {/* Stats Grid */}
         <div className="grid grid-cols-3 gap-6 mb-8">
-          <StatCard label="Throughput (RPM)" value="1.2M" trend="+12.4%" icon={<Activity className="text-indigo-400" />} color="indigo" />
-          <StatCard label="P99 Latency" value="482ms" trend="Critical" icon={<Clock3 className="text-rose-400" />} color="rose" />
-          <StatCard label="Error Rate" value="0.02%" trend="Normal" icon={<Shield className="text-emerald-400" />} color="emerald" />
+          <StatCard label="Throughput" value={summaryStats.throughput} trend={summaryStats.throughputTrend} icon={<Activity className="text-indigo-400" />} color="indigo" />
+          <StatCard label="P99 Latency" value={summaryStats.p99} trend={summaryStats.latencyTrend} icon={<Clock3 className="text-rose-400" />} color="rose" />
+          <StatCard label="Anomaly Rate" value={summaryStats.errorRate} trend={anomalies.length > 0 ? `${anomalies.length} alerts` : "Normal"} icon={<Shield className="text-emerald-400" />} color="emerald" />
         </div>
 
         {/* Chart View */}
@@ -345,10 +459,22 @@ export default function App() {
               <AlertTriangle className="w-5 h-5 text-orange-400" />
               Historical Incident Stream
             </h3>
-            <div className="space-y-3">
-              {anomalies.map((item, idx) => (
-                <AnomalyRow key={idx} item={item} onClick={() => runRCA(item)} />
-              ))}
+            <div className="space-y-3 max-h-[600px] overflow-y-auto custom-scrollbar pr-1">
+              {isLoading ? (
+                <div className="text-center py-12 text-slate-600 text-sm">
+                  <div className="w-8 h-8 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mx-auto mb-3" />
+                  Loading incidents...
+                </div>
+              ) : filteredAnomalies.length === 0 ? (
+                <div className="text-center py-12 text-slate-600 text-sm">
+                  <AlertTriangle className="w-8 h-8 mx-auto mb-3 opacity-20" />
+                  {searchQuery ? "No incidents match your search." : "No incidents detected yet. Generate traffic to see anomalies."}
+                </div>
+              ) : (
+                filteredAnomalies.map((item, idx) => (
+                  <AnomalyRow key={item.trace_id || idx} item={item} onClick={() => runRCA(item)} />
+                ))
+              )}
             </div>
           </div>
 
@@ -385,7 +511,7 @@ export default function App() {
                       )}
                     >
                       {tab}
-                      {activeTab === tab && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-500 shadow-[0_0_8px_indigo]" />}
+                      {activeTab === tab && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]" />}
                     </button>
                   ))}
                 </div>
@@ -427,34 +553,47 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Visual Blocks per Photo 3 */}
+                      {/* Visual Blocks — data-driven from trace context */}
                       <div className="grid grid-cols-3 gap-4">
                         <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
                           <h6 className="text-[9px] font-black text-slate-500 uppercase mb-3">Timeline</h6>
                           <div className="h-2 bg-slate-800 rounded-full relative overflow-hidden">
-                            <div className="absolute left-1/4 w-1/2 h-full bg-rose-500 shadow-[0_0_10px_rose]" />
+                            {analysis.traceData?.spans?.map((s, i) => (
+                              <div key={i} className={cn("absolute h-full rounded-full", s.type === "API" ? "bg-indigo-500" : s.type === "DATABASE" ? "bg-rose-500" : "bg-emerald-500")}
+                                style={{
+                                  left: `${((s.start || 0) / (analysis.traceData.duration_ms || 1)) * 100}%`,
+                                  width: `${Math.max(4, ((s.duration || 0) / (analysis.traceData.duration_ms || 1)) * 100)}%`,
+                                }} />
+                            ))}
                           </div>
-                          <div className="flex justify-between text-[8px] text-slate-600 mt-2 font-mono uppercase">
-                            <span>14:00</span>
-                            <span className="text-rose-400">14:20 (Spike)</span>
-                            <span>14:40</span>
+                          <div className="flex justify-between text-[8px] text-slate-600 mt-2 font-mono">
+                            <span>0ms</span>
+                            <span className="text-rose-400">{((analysis.traceData?.duration_ms ?? 0) / 2).toFixed(0)}ms</span>
+                            <span>{(analysis.traceData?.duration_ms ?? 0).toFixed(0)}ms</span>
                           </div>
                         </div>
                         <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
                           <h6 className="text-[9px] font-black text-slate-500 uppercase mb-3">Affected Services</h6>
-                          <div className="flex items-center justify-center gap-2">
-                            <div className="w-6 h-6 rounded bg-slate-800 flex items-center justify-center text-[8px]">UI</div>
-                            <div className="w-1 h-px bg-slate-700" />
-                            <div className="w-8 h-8 rounded bg-amber-500/20 border border-amber-500/50 flex items-center justify-center text-[10px] font-bold">API</div>
-                            <div className="w-1 h-px bg-slate-700" />
-                            <div className="w-6 h-6 rounded bg-rose-500 border border-rose-500 flex items-center justify-center text-[8px] font-bold shadow-[0_0_8px_rose]">DB</div>
+                          <div className="flex items-center justify-center gap-2 flex-wrap">
+                            {[...new Set(analysis.traceData?.spans?.map(s => s.service) || [])].map((svc, i, arr) => (
+                              <React.Fragment key={svc}>
+                                <div className={cn("px-2 py-1 rounded text-[8px] font-bold border",
+                                  i === arr.length - 1 ? "bg-rose-500/20 border-rose-500/50 text-rose-300" : "bg-slate-800 border-slate-700 text-slate-400"
+                                )}>{svc}</div>
+                                {i < arr.length - 1 && <div className="w-3 h-px bg-slate-700" />}
+                              </React.Fragment>
+                            ))}
                           </div>
                         </div>
                         <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
-                          <h6 className="text-[9px] font-black text-slate-500 uppercase mb-3">Trace Waterfall</h6>
-                          <div className="space-y-1.5 opacity-50">
-                            {[1, 2, 3].map(i => (
-                              <div key={i} className={`h-1 rounded-full ${i === 2 ? 'bg-rose-500 w-full' : 'bg-slate-700 w-1/2'}`} style={{ marginLeft: `${i * 10}%` }} />
+                          <h6 className="text-[9px] font-black text-slate-500 uppercase mb-3">Span Breakdown</h6>
+                          <div className="space-y-1.5">
+                            {(analysis.traceData?.spans || []).slice(0, 4).map((s, i) => (
+                              <div key={i} className="flex items-center gap-2">
+                                <div className={cn("h-1 rounded-full", s.type === "API" ? "bg-indigo-500" : s.type === "DATABASE" ? "bg-rose-500" : "bg-emerald-500")}
+                                  style={{ width: `${Math.max(10, ((s.duration || 0) / (analysis.traceData.duration_ms || 1)) * 100)}%` }} />
+                                <span className="text-[7px] text-slate-500 flex-shrink-0">{(s.duration || 0).toFixed(0)}ms</span>
+                              </div>
                             ))}
                           </div>
                         </div>
@@ -462,14 +601,14 @@ export default function App() {
 
                       <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
                         <button onClick={() => setSelectedTrace(null)} className="px-4 py-2 text-xs font-bold text-slate-500 hover:text-white transition-colors">Dismiss</button>
-                        <button className="px-6 py-2 bg-white text-slate-950 text-xs font-black uppercase tracking-tight rounded-lg hover:bg-slate-200 transition-colors">Create Ticket</button>
+                        <button onClick={() => { navigator.clipboard.writeText(JSON.stringify(analysis, null, 2)); alert("Analysis copied to clipboard — ticket created (demo mode)"); }} className="px-6 py-2 bg-white text-slate-950 text-xs font-black uppercase tracking-tight rounded-lg hover:bg-slate-200 transition-colors">Create Ticket</button>
                       </div>
                     </div>
                   ) : activeTab === "Traces" && traceContext ? (
                     <div className="space-y-4 animate-in fade-in">
                       <div className="flex justify-between items-center mb-4">
                         <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Detailed Waterfall</label>
-                        <span className="text-[10px] text-slate-500 font-mono">Total Duration: {traceContext.duration_ms.toFixed(2)}ms</span>
+                        <span className="text-[10px] text-slate-500 font-mono">Total Duration: {(traceContext.duration_ms ?? 0).toFixed(2)}ms</span>
                       </div>
                       <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                         {traceContext.spans.map((span, i) => (
@@ -515,9 +654,62 @@ export default function App() {
                         )}
                       </div>
                     </div>
+                  ) : activeTab === "Overview" && selectedTrace ? (
+                    <div className="space-y-4 animate-in fade-in">
+                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Incident Overview</label>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Service</div>
+                          <div className="text-sm font-bold text-slate-200">{selectedTrace.service}</div>
+                        </div>
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Route</div>
+                          <div className="text-sm font-bold text-slate-200">{selectedTrace.route || "—"}</div>
+                        </div>
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Duration</div>
+                          <div className="text-sm font-bold text-rose-400">{(selectedTrace.duration_ms ?? 0).toFixed(1)}ms</div>
+                        </div>
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Anomaly Score</div>
+                          <div className="text-sm font-bold text-amber-400">{(selectedTrace.anomaly_score ?? 0).toFixed(2)}</div>
+                        </div>
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 col-span-2">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Trace ID</div>
+                          <div className="text-xs font-mono text-indigo-400 break-all">{selectedTrace.trace_id}</div>
+                        </div>
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 col-span-2">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Timestamp</div>
+                          <div className="text-xs text-slate-300">{selectedTrace.timestamp ? new Date(selectedTrace.timestamp).toLocaleString() : "—"}</div>
+                        </div>
+                      </div>
+                      {traceContext && (
+                        <div className="mt-2 text-[10px] text-slate-500">
+                          {traceContext.spans.length} span{traceContext.spans.length !== 1 ? "s" : ""} reconstructed
+                        </div>
+                      )}
+                    </div>
+                  ) : activeTab === "Metrics" && selectedTrace ? (
+                    <div className="space-y-4 animate-in fade-in">
+                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Service Metrics — {selectedTrace.service}</label>
+                      <div className="h-48">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={chartData.filter(d => true)}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
+                            <XAxis dataKey="time" stroke="#475569" fontSize={9} tickLine={false} axisLine={false} />
+                            <YAxis stroke="#475569" fontSize={9} axisLine={false} tickLine={false} />
+                            <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }} itemStyle={{ color: '#818cf8', fontWeight: 'bold' }} />
+                            <Area type="monotone" dataKey="val" stroke="#818cf8" strokeWidth={2} fillOpacity={0.2} fill="#6366f1" />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="text-[10px] text-slate-500 italic">
+                        Showing {getMetricTypeForMode(monitoringMode)} for {selectedService === "All Services" ? "all services" : selectedService}
+                      </div>
+                    </div>
                   ) : (
                     <div className="h-full flex items-center justify-center text-slate-600 text-xs italic">
-                      Tab context coming soon or data loading...
+                      Select a tab to view data.
                     </div>
                   )}
                 </div>
@@ -538,10 +730,10 @@ export default function App() {
               <span className="text-[8px] text-slate-600 font-mono">60s window</span>
             </div>
             <div className="flex items-end gap-1.5 h-24">
-              {[40, 60, 45, 90, 55, 70, 40, 31, 25, 45, 65, 85].map((h, i) => (
+              {resourceChartData.cpuBars.map((h, i) => (
                 <div key={i} className={cn(
                   "flex-1 rounded-t-sm transition-all duration-1000",
-                  h > 80 ? "bg-rose-500 shadow-[0_0_10px_rose]" : "bg-indigo-500/20 group-hover:bg-indigo-500/60"
+                  h > 80 ? "bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)]" : "bg-indigo-500/20 group-hover:bg-indigo-500/60"
                 )} style={{ height: `${h}%` }} />
               ))}
             </div>
@@ -554,7 +746,7 @@ export default function App() {
             <div className="h-24 w-full">
               <svg viewBox="0 0 100 20" className="w-full h-full overflow-visible">
                 <path
-                  d="M0 15 Q 20 18, 40 10 T 80 5 T 100 15"
+                  d={resourceChartData.memPath}
                   fill="none"
                   stroke="#818cf8"
                   strokeWidth="2"
@@ -577,15 +769,15 @@ function AnomalyRow({ item, onClick }) {
     >
       <div className="flex items-center gap-4">
         <div className="w-2 h-8 rounded-full bg-rose-500/20 flex items-center justify-center">
-          <div className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rose]" />
+          <div className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
         </div>
         <div>
           <div className="text-sm font-bold text-slate-200">{item.service} <span className="text-slate-500 font-medium">→ {item.route}</span></div>
-          <div className="text-[10px] text-slate-500 font-mono">#{item.trace_id.slice(0, 12)} • {new Date(item.timestamp).toLocaleTimeString()}</div>
+          <div className="text-[10px] text-slate-500 font-mono">#{(item.trace_id ?? "").slice(0, 12)} • {new Date(item.timestamp).toLocaleTimeString()}</div>
         </div>
       </div>
       <div className="text-right">
-        <div className="text-sm font-black text-rose-500">{item.duration_ms.toFixed(0)}ms</div>
+        <div className="text-sm font-black text-rose-500">{(item.duration_ms ?? 0).toFixed(0)}ms</div>
         <ChevronRight className="w-4 h-4 text-slate-600 group-hover:translate-x-1 transition-transform" />
       </div>
     </div>
@@ -602,7 +794,7 @@ function Toggle({ label, active, onClick }) {
       )}>
         <div className={cn(
           "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all shadow-sm",
-          active ? "left-4.5" : "left-0.5"
+          active ? "left-[18px]" : "left-0.5"
         )} />
       </div>
     </div>
@@ -646,6 +838,12 @@ function LogRow({ log, onTraceClick }) {
   );
 }
 
+const statCardColorMap = {
+  indigo: "text-indigo-400 bg-indigo-400/10",
+  rose: "text-rose-400 bg-rose-400/10",
+  emerald: "text-emerald-400 bg-emerald-400/10",
+};
+
 function StatCard({ label, value, trend, icon, color }) {
   return (
     <div className="bg-slate-900/40 border border-slate-800/50 p-6 rounded-2xl relative overflow-hidden group hover:border-slate-700 transition-all">
@@ -654,7 +852,7 @@ function StatCard({ label, value, trend, icon, color }) {
           <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{label}</div>
           <div className="text-2xl font-black text-white">{value}</div>
         </div>
-        <div className={cn("text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded", `text-${color}-400 bg-${color}-400/10`)}>
+        <div className={cn("text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded", statCardColorMap[color] || "text-slate-400 bg-slate-400/10")}>
           {trend}
         </div>
       </div>

@@ -88,10 +88,12 @@ def merge_full_trace(s1, s2):
 keyed_by_trace = op.key_on("key-by-trace", scored_spans, get_trace_id_key)
 trace_reconstructor = win.fold_window("window-reconstruct", keyed_by_trace, clock, window_cfg, build_full_trace, fold_full_trace, merge_full_trace)
 
+# Persistent HTTP client (avoids creating a new connection per call)
+_http_client = httpx.Client(timeout=2.0)
+
 def send_to_dashboard(path, payload):
     try:
-        with httpx.Client() as client:
-            client.post(f"{DASHBOARD_URL}{path}", json=payload, timeout=1.0)
+        _http_client.post(f"{DASHBOARD_URL}{path}", json=payload)
     except Exception as e:
         logger.error(f"Failed to send to dashboard: {e}")
 
@@ -126,7 +128,10 @@ def process_full_trace(item):
     services_seen = set(s["service"] for s in stats["spans"])
     for svc in services_seen:
         svc_spans = [s for s in stats["spans"] if s["service"] == svc]
-        avg_latency = sum(s["duration_ms"] for s in svc_spans) / len(svc_spans)
+        durations = sorted(s["duration_ms"] for s in svc_spans)
+        avg_latency = sum(durations) / len(durations)
+        p99_index = max(0, int(len(durations) * 0.99) - 1)
+        p99_latency = durations[p99_index]
 
         # Throughput
         send_to_dashboard("/api/metrics", {
@@ -135,11 +140,11 @@ def process_full_trace(item):
             "value": float(len(svc_spans)),
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
-        # Latency
+        # Latency (actual p99)
         send_to_dashboard("/api/metrics", {
             "service": svc,
             "metric_type": "p99_latency",
-            "value": float(avg_latency),
+            "value": float(p99_latency),
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
@@ -193,7 +198,7 @@ def handle_log_with_redaction(state, log):
                 "timestamp": log.get("timestamp", datetime.now(timezone.utc).isoformat())
             })
 
-    return (state, state)
+    return (state, log)
 
 log_keyed = op.key_on("key-log-svc", parsed_logs, lambda x: x.get("service_name", "unknown"))
 op.stateful_map("log-handler", log_keyed, handle_log_with_redaction)
