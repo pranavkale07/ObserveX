@@ -32,27 +32,43 @@ export default function App() {
   const [analysis, setAnalysis] = useState(null);
   const [activeTab, setActiveTab] = useState("Traces");
   const [status, setStatus] = useState("connecting");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
   const ws = useRef(null);
+  const liveModeRef = useRef(liveMode);
+  const unmountedRef = useRef(false);
+
+  // Keep refs in sync
+  useEffect(() => { liveModeRef.current = liveMode; }, [liveMode]);
 
   // Load history and initialize WS
   useEffect(() => {
     fetchHistory();
     connectWS();
-    return () => ws.current?.close();
+    return () => {
+      unmountedRef.current = true;
+      if (ws.current) {
+        ws.current.onclose = null;
+        ws.current.close();
+      }
+    };
   }, []);
 
   const fetchHistory = async () => {
     try {
       const alertRes = await fetch(`${BACKEND_URL}/api/alerts`);
+      if (!alertRes.ok) throw new Error("Failed to fetch alerts");
       const alertData = await alertRes.json();
       setAnomalies(alertData);
 
       // Fetch metrics history for current service context
       const metricType = getMetricTypeForMode(monitoringMode);
       const metricRes = await fetch(`${BACKEND_URL}/api/metrics/${selectedService}/${metricType}`);
+      if (!metricRes.ok) throw new Error("Failed to fetch metrics");
       const metricData = await metricRes.json();
       setMetrics(metricData);
     } catch (err) { console.error(err); }
+    finally { setIsLoading(false); }
   };
 
   const getMetricTypeForMode = (mode) => {
@@ -62,21 +78,30 @@ export default function App() {
   };
 
   const connectWS = () => {
+    if (unmountedRef.current) return;
+    if (ws.current) {
+      ws.current.onclose = null;
+      ws.current.close();
+    }
     ws.current = new WebSocket(WS_URL);
     ws.current.onopen = () => setStatus("connected");
     ws.current.onclose = () => {
       setStatus("disconnected");
-      setTimeout(connectWS, 2000);
+      if (!unmountedRef.current) setTimeout(connectWS, 2000);
     };
+    ws.current.onerror = () => {};
     ws.current.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === "new_anomaly") {
-        setAnomalies(prev => [msg.data, ...prev].slice(0, 50));
-      } else if (msg.type === "metric_update") {
-        setMetrics(prev => [...prev, msg.data].slice(-60));
-      } else if (msg.type === "history") {
-        setAnomalies(msg.data);
-      }
+      if (!liveModeRef.current) return;
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "new_anomaly") {
+          setAnomalies(prev => [msg.data, ...prev].slice(0, 50));
+        } else if (msg.type === "metric_update") {
+          setMetrics(prev => [...prev, msg.data].slice(-60));
+        } else if (msg.type === "history") {
+          setAnomalies(msg.data);
+        }
+      } catch (err) { console.error("WS message parse error:", err); }
     };
   };
 
@@ -240,6 +265,23 @@ export default function App() {
     };
   }, [anomalies]);
 
+  // Filtered anomalies for search + anomaliesOnly toggle
+  const filteredAnomalies = useMemo(() => {
+    let filtered = anomalies;
+    if (anomaliesOnly) {
+      filtered = filtered.filter(a => a.is_anomaly);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      filtered = filtered.filter(a =>
+        (a.service || "").toLowerCase().includes(q) ||
+        (a.route || "").toLowerCase().includes(q) ||
+        (a.trace_id || "").toLowerCase().includes(q)
+      );
+    }
+    return filtered;
+  }, [anomalies, anomaliesOnly, searchQuery]);
+
   // Sync metrics when mode/service changes
   useEffect(() => {
     fetchHistory();
@@ -328,17 +370,15 @@ export default function App() {
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               <span className="text-[10px] font-black text-emerald-500 uppercase">Production</span>
             </div>
-            <select className="bg-transparent text-xs text-slate-400 font-medium focus:outline-none border-r border-slate-800 pr-4">
-              <option>Region: us-east-1</option>
-              <option>Region: eu-west-1</option>
-            </select>
           </div>
 
           <div className="flex-1 max-w-md mx-8 relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
               type="text"
-              placeholder="Search traces, logs, spans..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by service, route, or trace ID..."
               className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 pl-10 pr-4 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
             />
           </div>
@@ -348,10 +388,13 @@ export default function App() {
               <div className={cn("w-2 h-2 rounded-full", status === "connected" ? "bg-emerald-500 animate-pulse" : "bg-red-500")} />
               <span className="text-slate-400 uppercase font-black text-[9px]">{liveMode ? "Live" : "Paused"}</span>
             </div>
-            <button className="relative p-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors">
+            <button onClick={fetchHistory} className="relative p-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors" title="Refresh data">
               <RefreshCcw className="w-4 h-4" />
             </button>
-            <button className="flex items-center gap-2 px-4 py-2 bg-indigo-600 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-500/20">
+            <button
+              onClick={() => { if (anomalies.length > 0) runRCA(anomalies[0]); }}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-500/20"
+            >
               <Brain className="w-4 h-4" />
               AI Assistant
             </button>
@@ -414,10 +457,22 @@ export default function App() {
               <AlertTriangle className="w-5 h-5 text-orange-400" />
               Historical Incident Stream
             </h3>
-            <div className="space-y-3">
-              {anomalies.map((item, idx) => (
-                <AnomalyRow key={idx} item={item} onClick={() => runRCA(item)} />
-              ))}
+            <div className="space-y-3 max-h-[600px] overflow-y-auto custom-scrollbar pr-1">
+              {isLoading ? (
+                <div className="text-center py-12 text-slate-600 text-sm">
+                  <div className="w-8 h-8 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mx-auto mb-3" />
+                  Loading incidents...
+                </div>
+              ) : filteredAnomalies.length === 0 ? (
+                <div className="text-center py-12 text-slate-600 text-sm">
+                  <AlertTriangle className="w-8 h-8 mx-auto mb-3 opacity-20" />
+                  {searchQuery ? "No incidents match your search." : "No incidents detected yet. Generate traffic to see anomalies."}
+                </div>
+              ) : (
+                filteredAnomalies.map((item, idx) => (
+                  <AnomalyRow key={item.trace_id || idx} item={item} onClick={() => runRCA(item)} />
+                ))
+              )}
             </div>
           </div>
 
@@ -544,7 +599,7 @@ export default function App() {
 
                       <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
                         <button onClick={() => setSelectedTrace(null)} className="px-4 py-2 text-xs font-bold text-slate-500 hover:text-white transition-colors">Dismiss</button>
-                        <button className="px-6 py-2 bg-white text-slate-950 text-xs font-black uppercase tracking-tight rounded-lg hover:bg-slate-200 transition-colors">Create Ticket</button>
+                        <button onClick={() => { navigator.clipboard.writeText(JSON.stringify(analysis, null, 2)); alert("Analysis copied to clipboard — ticket created (demo mode)"); }} className="px-6 py-2 bg-white text-slate-950 text-xs font-black uppercase tracking-tight rounded-lg hover:bg-slate-200 transition-colors">Create Ticket</button>
                       </div>
                     </div>
                   ) : activeTab === "Traces" && traceContext ? (
@@ -597,9 +652,62 @@ export default function App() {
                         )}
                       </div>
                     </div>
+                  ) : activeTab === "Overview" && selectedTrace ? (
+                    <div className="space-y-4 animate-in fade-in">
+                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Incident Overview</label>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Service</div>
+                          <div className="text-sm font-bold text-slate-200">{selectedTrace.service}</div>
+                        </div>
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Route</div>
+                          <div className="text-sm font-bold text-slate-200">{selectedTrace.route || "—"}</div>
+                        </div>
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Duration</div>
+                          <div className="text-sm font-bold text-rose-400">{(selectedTrace.duration_ms ?? 0).toFixed(1)}ms</div>
+                        </div>
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Anomaly Score</div>
+                          <div className="text-sm font-bold text-amber-400">{(selectedTrace.anomaly_score ?? 0).toFixed(2)}</div>
+                        </div>
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 col-span-2">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Trace ID</div>
+                          <div className="text-xs font-mono text-indigo-400 break-all">{selectedTrace.trace_id}</div>
+                        </div>
+                        <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 col-span-2">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Timestamp</div>
+                          <div className="text-xs text-slate-300">{selectedTrace.timestamp ? new Date(selectedTrace.timestamp).toLocaleString() : "—"}</div>
+                        </div>
+                      </div>
+                      {traceContext && (
+                        <div className="mt-2 text-[10px] text-slate-500">
+                          {traceContext.spans.length} span{traceContext.spans.length !== 1 ? "s" : ""} reconstructed
+                        </div>
+                      )}
+                    </div>
+                  ) : activeTab === "Metrics" && selectedTrace ? (
+                    <div className="space-y-4 animate-in fade-in">
+                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Service Metrics — {selectedTrace.service}</label>
+                      <div className="h-48">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={chartData.filter(d => true)}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
+                            <XAxis dataKey="time" stroke="#475569" fontSize={9} tickLine={false} axisLine={false} />
+                            <YAxis stroke="#475569" fontSize={9} axisLine={false} tickLine={false} />
+                            <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }} itemStyle={{ color: '#818cf8', fontWeight: 'bold' }} />
+                            <Area type="monotone" dataKey="val" stroke="#818cf8" strokeWidth={2} fillOpacity={0.2} fill="#6366f1" />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="text-[10px] text-slate-500 italic">
+                        Showing {getMetricTypeForMode(monitoringMode)} for {selectedService === "All Services" ? "all services" : selectedService}
+                      </div>
+                    </div>
                   ) : (
                     <div className="h-full flex items-center justify-center text-slate-600 text-xs italic">
-                      Tab context coming soon or data loading...
+                      Select a tab to view data.
                     </div>
                   )}
                 </div>
