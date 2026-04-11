@@ -3,6 +3,7 @@ import logging
 import json
 import asyncio
 import aiosqlite
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any
 from abc import ABC, abstractmethod
@@ -21,7 +22,12 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="ObserverAI Analytical API")
+@asynccontextmanager
+async def lifespan(app):
+    await storage.init_db()
+    yield
+
+app = FastAPI(title="ObserverAI Analytical API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -97,6 +103,7 @@ class SQLiteStorage(TelemetryStorage):
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_service ON logs(service_name)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_trace ON logs(trace_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_severity ON logs(severity)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_alerts_service ON alerts(service)")
             await db.commit()
 
     async def save_alert(self, alert: Dict):
@@ -174,11 +181,9 @@ class SQLiteStorage(TelemetryStorage):
                 (log.get("trace_id", ""), log.get("span_id", ""), log["service_name"],
                  log["body"], log.get("severity", "INFO"), log["timestamp"])
             )
-            # Enforce retention: keep only the last 1000 logs
+            # Enforce retention: keep only the last 1000 logs (efficient threshold check)
             await db.execute("""
-                DELETE FROM logs WHERE id NOT IN (
-                    SELECT id FROM logs ORDER BY id DESC LIMIT 1000
-                )
+                DELETE FROM logs WHERE id < (SELECT MAX(id) - 1000 FROM logs)
             """)
             await db.commit()
 
@@ -207,10 +212,6 @@ class SQLiteStorage(TelemetryStorage):
             return [dict(row) for row in rows]
 
 storage = SQLiteStorage()
-
-@app.on_event("startup")
-async def startup():
-    await storage.init_db()
 
 # --- GEMINI AI ---
 
@@ -263,6 +264,18 @@ class LogEvent(BaseModel):
 
 active_connections: List[WebSocket] = []
 
+async def broadcast(message: dict):
+    """Broadcast a message to all connected WebSocket clients, safely removing dead ones."""
+    dead = []
+    for connection in active_connections:
+        try:
+            await connection.send_json(message)
+        except Exception:
+            dead.append(connection)
+    for d in dead:
+        if d in active_connections:
+            active_connections.remove(d)
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -274,32 +287,21 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        active_connections.remove(websocket)
+        if websocket in active_connections:
+            active_connections.remove(websocket)
 
 @app.post("/api/alerts")
 async def receive_alert(event: AnomalyEvent):
-    event_dict = event.dict()
+    event_dict = event.model_dump()
     await storage.save_alert(event_dict)
-    
-    # Broadcast
-    for connection in active_connections:
-        try:
-            await connection.send_json({"type": "new_anomaly", "data": event_dict})
-        except Exception:
-            active_connections.remove(connection)
+    await broadcast({"type": "new_anomaly", "data": event_dict})
     return {"status": "ok"}
 
 @app.post("/api/metrics")
 async def receive_metric(metric: MetricUpdate):
-    metric_dict = metric.dict()
+    metric_dict = metric.model_dump()
     await storage.save_metric(metric_dict)
-    
-    # Broadcast metrics update if needed (or let frontend poll)
-    for connection in active_connections:
-        try:
-            await connection.send_json({"type": "metric_update", "data": metric_dict})
-        except Exception:
-            active_connections.remove(connection)
+    await broadcast({"type": "metric_update", "data": metric_dict})
     return {"status": "ok"}
 
 @app.get("/api/alerts")
@@ -308,7 +310,7 @@ async def get_alerts(service: Optional[str] = None):
 
 @app.post("/api/traces")
 async def receive_trace(trace: TraceInventory):
-    await storage.save_trace(trace.dict())
+    await storage.save_trace(trace.model_dump())
     return {"status": "ok"}
 
 @app.get("/api/traces/{trace_id}")
@@ -324,7 +326,7 @@ async def get_metrics_ts(service: str, metric_type: str):
 
 @app.post("/api/logs")
 async def receive_log(event: LogEvent):
-    event_dict = event.dict()
+    event_dict = event.model_dump()
     await storage.save_log(event_dict)
     return {"status": "ok"}
 
@@ -366,7 +368,8 @@ async def analyze_trace(trace_id: str, trace_data: Dict):
             text = text.split("```")[1].strip()
         return json.loads(text)
     except Exception as e:
-        return {"root_cause": f"Analysis failed: {str(e)}", "suggested_fixes": [], "risk_prediction": "N/A", "confidence": 0}
+        logger.error(f"RCA analysis failed for trace {trace_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"AI analysis failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
