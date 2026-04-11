@@ -177,6 +177,69 @@ export default function App() {
     return "P99 Latency (ms) Over Time";
   }, [monitoringMode]);
 
+  // Derived summary stats for StatCards (Phase 2: replace hardcoded values)
+  const summaryStats = useMemo(() => {
+    const latencies = metrics.filter(m => m.metric_type === "p99_latency").map(m => m.value);
+    const throughputs = metrics.filter(m => m.metric_type === "throughput").map(m => m.value);
+    const totalAnomalies = anomalies.filter(a => a.is_anomaly).length;
+    const totalAlerts = anomalies.length;
+
+    const throughputVal = throughputs.length > 0
+      ? throughputs.reduce((a, b) => a + b, 0).toFixed(0)
+      : "—";
+    const latencyVal = latencies.length > 0
+      ? latencies[latencies.length - 1].toFixed(0) + "ms"
+      : "—";
+    const errorRate = totalAlerts > 0
+      ? ((totalAnomalies / totalAlerts) * 100).toFixed(1) + "%"
+      : "0%";
+    const latencyTrend = latencies.length > 0 && latencies[latencies.length - 1] > 500
+      ? "Critical" : "Normal";
+    const throughputTrend = throughputs.length >= 2
+      ? ((throughputs[throughputs.length - 1] - throughputs[throughputs.length - 2]) >= 0 ? "+" : "") +
+        ((throughputs[throughputs.length - 1] - throughputs[throughputs.length - 2])).toFixed(0)
+      : "—";
+
+    return { throughput: throughputVal, p99: latencyVal, errorRate, latencyTrend, throughputTrend };
+  }, [metrics, anomalies]);
+
+  // Derive dynamic data for resource charts from metrics
+  const resourceChartData = useMemo(() => {
+    const throughputs = metrics.filter(m => m.metric_type === "throughput").map(m => m.value);
+    const latencies = metrics.filter(m => m.metric_type === "p99_latency").map(m => m.value);
+    // Normalize throughputs to percentage (0-100) based on max
+    const maxT = Math.max(...throughputs, 1);
+    const cpuBars = throughputs.slice(-12).map(v => Math.min(100, Math.round((v / maxT) * 80 + 10)));
+    // Build SVG path from latencies
+    const latSlice = latencies.slice(-10);
+    let memPath = "M0 15";
+    if (latSlice.length > 1) {
+      const maxL = Math.max(...latSlice, 1);
+      latSlice.forEach((v, i) => {
+        const x = (i / (latSlice.length - 1)) * 100;
+        const y = 20 - (v / maxL) * 18;
+        memPath += ` L ${x.toFixed(0)} ${y.toFixed(1)}`;
+      });
+    } else {
+      memPath = "M0 15 Q 20 18, 40 10 T 80 5 T 100 15";
+    }
+    return {
+      cpuBars: cpuBars.length > 0 ? cpuBars : [20, 30, 25, 40, 35, 30, 20, 25, 30, 35, 40, 30],
+      memPath,
+    };
+  }, [metrics]);
+
+  // Dynamic AI Insight from latest anomaly
+  const aiInsight = useMemo(() => {
+    if (anomalies.length === 0) return { text: "No active anomalies detected. System operating normally.", hasAnomaly: false };
+    const latest = anomalies[0];
+    return {
+      text: `Detected anomaly in ${latest.service} — ${(latest.duration_ms ?? 0).toFixed(0)}ms latency on ${latest.route}. Investigate for potential performance degradation.`,
+      hasAnomaly: true,
+      alert: latest,
+    };
+  }, [anomalies]);
+
   // Sync metrics when mode/service changes
   useEffect(() => {
     fetchHistory();
@@ -196,7 +259,7 @@ export default function App() {
         <nav className="space-y-4">
           <label className="text-[10px] uppercase font-black tracking-widest text-slate-500">Service Topology</label>
           <div className="space-y-1">
-            {["All Services", "api-gateway", "python-service", "node-service"].map(svc => (
+            {["All Services", "api-gateway", "python-service"].map(svc => (
               <button
                 key={svc}
                 onClick={() => setSelectedService(svc)}
@@ -223,17 +286,22 @@ export default function App() {
             <Toggle label="Auto-Correlation" active={autoCorrelation} onClick={() => setAutoCorrelation(!autoCorrelation)} />
           </div>
 
-          <div className="bg-indigo-600/10 border border-indigo-500/20 p-4 rounded-xl mt-6">
+          <div className={cn("border p-4 rounded-xl mt-6", aiInsight.hasAnomaly ? "bg-rose-600/10 border-rose-500/20" : "bg-indigo-600/10 border-indigo-500/20")}>
             <div className="flex items-center gap-2 mb-2">
-              <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-ping" />
-              <span className="text-[10px] uppercase font-black text-indigo-400 tracking-widest">AI Insight</span>
+              <div className={cn("w-1.5 h-1.5 rounded-full", aiInsight.hasAnomaly ? "bg-rose-500 animate-ping" : "bg-indigo-500")} />
+              <span className={cn("text-[10px] uppercase font-black tracking-widest", aiInsight.hasAnomaly ? "text-rose-400" : "text-indigo-400")}>AI Insight</span>
             </div>
             <p className="text-[11px] text-slate-300 leading-relaxed">
-              Detecting a 15% drift in latency across **python-service**. Possible database deadlock.
+              {aiInsight.text}
             </p>
-            <button className="w-full mt-3 py-2 bg-indigo-600 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-colors">
-              Investigate Root Cause
-            </button>
+            {aiInsight.hasAnomaly && (
+              <button
+                onClick={() => runRCA(aiInsight.alert)}
+                className="w-full mt-3 py-2 bg-indigo-600 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-colors"
+              >
+                Investigate Root Cause
+              </button>
+            )}
           </div>
         </div>
 
@@ -292,9 +360,9 @@ export default function App() {
 
         {/* Stats Grid */}
         <div className="grid grid-cols-3 gap-6 mb-8">
-          <StatCard label="Throughput (RPM)" value="1.2M" trend="+12.4%" icon={<Activity className="text-indigo-400" />} color="indigo" />
-          <StatCard label="P99 Latency" value="482ms" trend="Critical" icon={<Clock3 className="text-rose-400" />} color="rose" />
-          <StatCard label="Error Rate" value="0.02%" trend="Normal" icon={<Shield className="text-emerald-400" />} color="emerald" />
+          <StatCard label="Throughput" value={summaryStats.throughput} trend={summaryStats.throughputTrend} icon={<Activity className="text-indigo-400" />} color="indigo" />
+          <StatCard label="P99 Latency" value={summaryStats.p99} trend={summaryStats.latencyTrend} icon={<Clock3 className="text-rose-400" />} color="rose" />
+          <StatCard label="Anomaly Rate" value={summaryStats.errorRate} trend={anomalies.length > 0 ? `${anomalies.length} alerts` : "Normal"} icon={<Shield className="text-emerald-400" />} color="emerald" />
         </div>
 
         {/* Chart View */}
@@ -428,34 +496,47 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Visual Blocks per Photo 3 */}
+                      {/* Visual Blocks — data-driven from trace context */}
                       <div className="grid grid-cols-3 gap-4">
                         <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
                           <h6 className="text-[9px] font-black text-slate-500 uppercase mb-3">Timeline</h6>
                           <div className="h-2 bg-slate-800 rounded-full relative overflow-hidden">
-                            <div className="absolute left-1/4 w-1/2 h-full bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)]" />
+                            {analysis.traceData?.spans?.map((s, i) => (
+                              <div key={i} className={cn("absolute h-full rounded-full", s.type === "API" ? "bg-indigo-500" : s.type === "DATABASE" ? "bg-rose-500" : "bg-emerald-500")}
+                                style={{
+                                  left: `${((s.start || 0) / (analysis.traceData.duration_ms || 1)) * 100}%`,
+                                  width: `${Math.max(4, ((s.duration || 0) / (analysis.traceData.duration_ms || 1)) * 100)}%`,
+                                }} />
+                            ))}
                           </div>
-                          <div className="flex justify-between text-[8px] text-slate-600 mt-2 font-mono uppercase">
-                            <span>14:00</span>
-                            <span className="text-rose-400">14:20 (Spike)</span>
-                            <span>14:40</span>
+                          <div className="flex justify-between text-[8px] text-slate-600 mt-2 font-mono">
+                            <span>0ms</span>
+                            <span className="text-rose-400">{((analysis.traceData?.duration_ms ?? 0) / 2).toFixed(0)}ms</span>
+                            <span>{(analysis.traceData?.duration_ms ?? 0).toFixed(0)}ms</span>
                           </div>
                         </div>
                         <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
                           <h6 className="text-[9px] font-black text-slate-500 uppercase mb-3">Affected Services</h6>
-                          <div className="flex items-center justify-center gap-2">
-                            <div className="w-6 h-6 rounded bg-slate-800 flex items-center justify-center text-[8px]">UI</div>
-                            <div className="w-1 h-px bg-slate-700" />
-                            <div className="w-8 h-8 rounded bg-amber-500/20 border border-amber-500/50 flex items-center justify-center text-[10px] font-bold">API</div>
-                            <div className="w-1 h-px bg-slate-700" />
-                            <div className="w-6 h-6 rounded bg-rose-500 border border-rose-500 flex items-center justify-center text-[8px] font-bold shadow-[0_0_8px_rgba(244,63,94,0.5)]">DB</div>
+                          <div className="flex items-center justify-center gap-2 flex-wrap">
+                            {[...new Set(analysis.traceData?.spans?.map(s => s.service) || [])].map((svc, i, arr) => (
+                              <React.Fragment key={svc}>
+                                <div className={cn("px-2 py-1 rounded text-[8px] font-bold border",
+                                  i === arr.length - 1 ? "bg-rose-500/20 border-rose-500/50 text-rose-300" : "bg-slate-800 border-slate-700 text-slate-400"
+                                )}>{svc}</div>
+                                {i < arr.length - 1 && <div className="w-3 h-px bg-slate-700" />}
+                              </React.Fragment>
+                            ))}
                           </div>
                         </div>
                         <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
-                          <h6 className="text-[9px] font-black text-slate-500 uppercase mb-3">Trace Waterfall</h6>
-                          <div className="space-y-1.5 opacity-50">
-                            {[1, 2, 3].map(i => (
-                              <div key={i} className={`h-1 rounded-full ${i === 2 ? 'bg-rose-500 w-full' : 'bg-slate-700 w-1/2'}`} style={{ marginLeft: `${i * 10}%` }} />
+                          <h6 className="text-[9px] font-black text-slate-500 uppercase mb-3">Span Breakdown</h6>
+                          <div className="space-y-1.5">
+                            {(analysis.traceData?.spans || []).slice(0, 4).map((s, i) => (
+                              <div key={i} className="flex items-center gap-2">
+                                <div className={cn("h-1 rounded-full", s.type === "API" ? "bg-indigo-500" : s.type === "DATABASE" ? "bg-rose-500" : "bg-emerald-500")}
+                                  style={{ width: `${Math.max(10, ((s.duration || 0) / (analysis.traceData.duration_ms || 1)) * 100)}%` }} />
+                                <span className="text-[7px] text-slate-500 flex-shrink-0">{(s.duration || 0).toFixed(0)}ms</span>
+                              </div>
                             ))}
                           </div>
                         </div>
@@ -470,7 +551,7 @@ export default function App() {
                     <div className="space-y-4 animate-in fade-in">
                       <div className="flex justify-between items-center mb-4">
                         <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Detailed Waterfall</label>
-                        <span className="text-[10px] text-slate-500 font-mono">Total Duration: {traceContext.duration_ms.toFixed(2)}ms</span>
+                        <span className="text-[10px] text-slate-500 font-mono">Total Duration: {(traceContext.duration_ms ?? 0).toFixed(2)}ms</span>
                       </div>
                       <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                         {traceContext.spans.map((span, i) => (
@@ -539,7 +620,7 @@ export default function App() {
               <span className="text-[8px] text-slate-600 font-mono">60s window</span>
             </div>
             <div className="flex items-end gap-1.5 h-24">
-              {[40, 60, 45, 90, 55, 70, 40, 31, 25, 45, 65, 85].map((h, i) => (
+              {resourceChartData.cpuBars.map((h, i) => (
                 <div key={i} className={cn(
                   "flex-1 rounded-t-sm transition-all duration-1000",
                   h > 80 ? "bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)]" : "bg-indigo-500/20 group-hover:bg-indigo-500/60"
@@ -555,7 +636,7 @@ export default function App() {
             <div className="h-24 w-full">
               <svg viewBox="0 0 100 20" className="w-full h-full overflow-visible">
                 <path
-                  d="M0 15 Q 20 18, 40 10 T 80 5 T 100 15"
+                  d={resourceChartData.memPath}
                   fill="none"
                   stroke="#818cf8"
                   strokeWidth="2"
