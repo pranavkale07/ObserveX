@@ -369,20 +369,49 @@ async def get_logs(service: Optional[str] = None, severity: Optional[str] = None
                                    trace_id=trace_id, limit=limit)
 
 @app.post("/api/rca/{trace_id}")
-async def analyze_trace(trace_id: str, trace_data: Dict):
+async def analyze_trace(trace_id: str, event: AnomalyEvent):
     if not model:
         raise HTTPException(status_code=503, detail="Gemini API not configured")
 
-    anomaly_type = trace_data.get("anomaly_type") or "Unclassified Anomaly"
-    reasons = trace_data.get("reasons") or []
-    rule_flags = trace_data.get("rule_flags") or {}
-    ml_scores = trace_data.get("ml_scores") or {}
-    service = trace_data.get("service", "unknown")
-    route = trace_data.get("route", "unknown")
-    duration_ms = trace_data.get("duration_ms", 0)
-    anomaly_score = trace_data.get("anomaly_score", 0)
-    spans = trace_data.get("spans") or []
+    # ── Extract typed fields from AnomalyEvent ──────────────────────
+    anomaly_type = event.anomaly_type or "Unclassified Anomaly"
+    reasons = event.reasons or []
+    rule_flags = event.rule_flags or {}
+    ml_scores = event.ml_scores or {}
+    service = event.service
+    route = event.route
+    duration_ms = event.duration_ms
+    anomaly_score = event.anomaly_score
+    timestamp = event.timestamp
+    spans = [s.model_dump() for s in (event.spans or [])]
 
+    # ── Span statistics ─────────────────────────────────────────────
+    span_count = len(spans)
+    error_spans = [s for s in spans if s.get("is_anomaly")]
+    error_count = len(error_spans)
+    unique_services = list({s.get("service", "?") for s in spans})
+    durations = [s.get("duration_ms", 0) for s in spans]
+    max_span_dur = max(durations) if durations else 0
+    min_span_dur = min(durations) if durations else 0
+    avg_span_dur = sum(durations) / len(durations) if durations else 0
+
+    # ── Dependency chain (parent → child relationships) ─────────────
+    span_ids = {s.get("span_id", "") for s in spans if s.get("span_id")}
+    dep_chain_lines = []
+    dangling_parents = []
+    for s in spans:
+        parent = s.get("parent_span_id", "")
+        sid = s.get("span_id", "")
+        svc = s.get("service", "?")
+        name = s.get("name", "?")
+        if parent and parent in span_ids:
+            dep_chain_lines.append(f"  {parent[:8]}… → {sid[:8]}… ({svc}::{name})")
+        elif parent and parent not in span_ids:
+            dangling_parents.append(f"  ⚠ {sid[:8]}… ({svc}::{name}) references missing parent {parent[:8]}…")
+    dep_block = "\n".join(dep_chain_lines[:15]) if dep_chain_lines else "  (no parent-child links found)"
+    dangling_block = "\n".join(dangling_parents) if dangling_parents else "  (none)"
+
+    # ── Rule detectors (human-readable) ─────────────────────────────
     fired_detectors = []
     if rule_flags.get("n_plus_1"):
         fired_detectors.append(
@@ -409,18 +438,23 @@ async def analyze_trace(trace_id: str, trace_data: Dict):
 
     ml_block = "\n".join(f"- {name}: {float(v):.3f}" for name, v in ml_scores.items()) or "- (no ML scores)"
 
+    # ── Span inventory (detailed) ───────────────────────────────────
     span_summary_lines = []
-    for s in spans[:15]:
-        span_summary_lines.append(
+    for s in spans[:20]:
+        line = (
             f"  - {s.get('service','?')}::{s.get('name','?')} "
-            f"dur={s.get('duration_ms',0):.0f}ms status={s.get('status_code',0)}"
-            + (" [ANOMALOUS]" if s.get("is_anomaly") else "")
+            f"dur={s.get('duration_ms',0):.0f}ms status={s.get('status_code',0)} "
+            f"span={s.get('span_id','')[:8]}… parent={s.get('parent_span_id','')[:8]}…"
         )
+        if s.get("is_anomaly"):
+            line += " [ANOMALOUS]"
+        span_summary_lines.append(line)
     spans_block = "\n".join(span_summary_lines) or "  (no spans)"
 
+    # ── Correlated logs from DB ─────────────────────────────────────
     logs_block = "(no correlated logs)"
     try:
-        trace_logs = await storage.get_logs(trace_id=trace_id, limit=20)
+        trace_logs = await storage.get_logs(trace_id=trace_id, limit=25)
         if trace_logs:
             log_lines = []
             for lg in trace_logs:
@@ -432,44 +466,86 @@ async def analyze_trace(trace_id: str, trace_data: Dict):
     except Exception as e:
         logger.warning(f"Could not fetch correlated logs for RCA {trace_id}: {e}")
 
-    prompt = f"""You are an expert SRE performing root-cause analysis on an anomalous distributed trace.
-The upstream pipeline has already classified the anomaly and run rule + ML detectors — use their
-verdicts as primary evidence. Do not re-derive; reason over them.
+    # ── Raw anomaly event JSON (complete context for LLM) ───────────
+    event_json = json.dumps(event.model_dump(), indent=2, default=str)
 
-TRACE: {trace_id}
-SERVICE: {service}    ROUTE: {route}
-DURATION: {duration_ms:.0f}ms    ANOMALY_SCORE: {anomaly_score:.2f}
+    prompt = f"""You are an expert SRE performing forensic root-cause analysis on an anomalous distributed trace
+detected by the ObserveX Cognitive Observability pipeline. The upstream pipeline has already classified
+the anomaly and run rule-based + ML ensemble detectors — use their verdicts as primary evidence.
 
-CLASSIFIED ANOMALY TYPE: {anomaly_type}
-REASONS (detector tags): {reasons}
+═══════════════════════════════════════════
+ANOMALY EVENT SUMMARY
+═══════════════════════════════════════════
+TRACE ID:       {trace_id}
+TIMESTAMP:      {timestamp}
+SERVICE:        {service}
+ROUTE:          {route}
+DURATION:       {duration_ms:.0f}ms
+ANOMALY SCORE:  {anomaly_score:.2f} (0=normal, 1=critical)
+ANOMALY TYPE:   {anomaly_type}
+DETECTOR TAGS:  {reasons}
 
-RULE DETECTORS FIRED:
+═══════════════════════════════════════════
+TRACE STRUCTURE
+═══════════════════════════════════════════
+Total Spans:      {span_count}
+Anomalous Spans:  {error_count}
+Services Hit:     {', '.join(unique_services)}
+Latency Range:    {min_span_dur:.0f}ms – {max_span_dur:.0f}ms (avg {avg_span_dur:.0f}ms)
+
+DEPENDENCY CHAIN (parent → child):
+{dep_block}
+
+DANGLING PARENTS (dependency breaks):
+{dangling_block}
+
+═══════════════════════════════════════════
+RULE DETECTORS FIRED
+═══════════════════════════════════════════
 {detectors_block}
 
-ML SCORES (online HS-Trees; 0→normal, 1→anomalous):
+═══════════════════════════════════════════
+ML ENSEMBLE SCORES (0→normal, 1→anomalous)
+═══════════════════════════════════════════
 {ml_block}
 
-SPAN INVENTORY (first 15):
+═══════════════════════════════════════════
+SPAN INVENTORY (first 20 spans with parent/child IDs)
+═══════════════════════════════════════════
 {spans_block}
 
-CORRELATED LOGS (flushed by trace_id at anomaly time):
+═══════════════════════════════════════════
+CORRELATED LOGS (flushed by trace_id at anomaly time)
+═══════════════════════════════════════════
 {logs_block}
 
-MISSION:
-1. Explain WHY this trace tripped the detectors that fired — be specific about the
-   structural evidence (e.g. "12 sequential DB spans point to a missing JOIN").
-2. If multiple detectors fired, identify which is the root vs. which is a downstream symptom.
-3. Propose fixes that address the root cause, not the symptom.
+═══════════════════════════════════════════
+RAW ANOMALY EVENT (complete pipeline output)
+═══════════════════════════════════════════
+{event_json}
 
-Respond as STRICT JSON (no markdown fences):
+═══════════════════════════════════════════
+MISSION
+═══════════════════════════════════════════
+1. Explain WHY this trace tripped the detectors that fired — be specific about the
+   structural evidence (e.g. "87 sequential DB child spans under one parent indicate
+   a missing JOIN or unbatched ORM query").
+2. Use the dependency chain and dangling parent data to identify cross-service
+   propagation paths and pinpoint the originating service.
+3. If multiple detectors fired, identify which is the root cause vs. downstream symptom.
+4. Cross-reference correlated logs for error messages, stack traces, or redaction tokens
+   that corroborate the detector verdict.
+5. Propose concrete, actionable fixes that address the root cause — not the symptom.
+
+Respond as STRICT JSON (no markdown fences, no commentary outside JSON):
 {{
-  "root_cause": "brief explanation tied to the fired detectors (max 25 words)",
-  "suggested_fixes": ["concrete fix 1", "concrete fix 2"],
-  "risk_prediction": "one-sentence impact if unresolved",
+  "root_cause": "concise explanation tied to fired detectors and structural evidence (max 30 words)",
+  "suggested_fixes": ["concrete fix 1", "concrete fix 2", "concrete fix 3"],
+  "risk_prediction": "one-sentence impact if left unresolved",
   "confidence": 0.0-1.0
 }}
 """
-    
+
     try:
         response = model.generate_content(prompt)
         text = response.text.strip()
