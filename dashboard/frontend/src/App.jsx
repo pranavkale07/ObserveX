@@ -52,6 +52,10 @@ const ANOMALY_STYLE = {
   "Dependency Chain Break":           { text: "text-red-300", bg: "bg-red-600/15", border: "border-red-600/30", dot: "bg-red-600" },
   "PII Redaction Density":            { text: "text-purple-300", bg: "bg-purple-500/15", border: "border-purple-500/30", dot: "bg-purple-500" },
   "Statistical Outlier (HS-Trees)":   { text: "text-sky-300", bg: "bg-sky-500/15", border: "border-sky-500/30", dot: "bg-sky-500" },
+  "Statistical Outlier (LOF)":        { text: "text-cyan-300", bg: "bg-cyan-500/15", border: "border-cyan-500/30", dot: "bg-cyan-500" },
+  "Statistical Outlier (Isolation Forest)": { text: "text-teal-300", bg: "bg-teal-500/15", border: "border-teal-500/30", dot: "bg-teal-500" },
+  "Reconstruction Anomaly (Autoencoder)":   { text: "text-pink-300", bg: "bg-pink-500/15", border: "border-pink-500/30", dot: "bg-pink-500" },
+  "Boundary Anomaly (SVM)":           { text: "text-violet-300", bg: "bg-violet-500/15", border: "border-violet-500/30", dot: "bg-violet-500" },
   "ML Ensemble Anomaly":              { text: "text-blue-300", bg: "bg-blue-500/15", border: "border-blue-500/30", dot: "bg-blue-500" },
   "Unclassified Anomaly":             { text: "text-slate-300", bg: "bg-slate-500/15", border: "border-slate-500/30", dot: "bg-slate-500" },
 };
@@ -228,19 +232,24 @@ export default function App() {
       try {
         const rcaPayload = {
           ...traceContext,
-          service: selectedTrace?.service,
-          route: selectedTrace?.route,
-          anomaly_score: selectedTrace?.anomaly_score,
+          service: selectedTrace?.service || "unknown",
+          route: selectedTrace?.route || "unknown",
+          anomaly_score: selectedTrace?.anomaly_score ?? 0,
+          is_anomaly: selectedTrace?.is_anomaly ?? true,
           anomaly_type: selectedTrace?.anomaly_type,
+          timestamp: selectedTrace?.timestamp || new Date().toISOString(),
           reasons: selectedTrace?.reasons,
           rule_flags: selectedTrace?.rule_flags,
           ml_scores: selectedTrace?.ml_scores,
           spans: (traceContext.spans || []).map(s => ({
-            name: s.name,
-            service: s.service,
-            duration_ms: s.duration,
+            name: s.name || "unknown",
+            service: s.service || "unknown",
+            duration_ms: s.duration ?? s.duration_ms ?? 0,
+            start_time: s.start_time || new Date().toISOString(),
             status_code: s.status_code,
             is_anomaly: s.is_anomaly,
+            span_id: s.span_id,
+            parent_span_id: s.parent_span_id,
           })),
         };
         const response = await fetch(`${BACKEND_URL}/api/rca/${traceContext.trace_id}`, {
@@ -248,13 +257,18 @@ export default function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(rcaPayload)
         });
+        if (!response.ok) {
+          const errBody = await response.text();
+          console.error(`RCA API error ${response.status}:`, errBody);
+          throw new Error(`API ${response.status}: ${errBody}`);
+        }
         const data = await response.json();
         setAnalysis({ ...data, traceData: traceContext });
       } catch (err) {
         console.error("AI Analysis Failed:", err);
         setAnalysis({
-          root_cause: "AI analysis is currently unavailable.",
-          suggested_fixes: ["Check GEMINI_API_KEY configuration", "Try again in a few moments"],
+          root_cause: `AI analysis failed: ${err.message || "Unknown error"}`,
+          suggested_fixes: ["Check GEMINI_API_KEY configuration", "Check backend logs for details", "Try again in a few moments"],
           risk_prediction: "N/A",
           traceData: traceContext
         });
@@ -609,7 +623,7 @@ export default function App() {
 
                 {/* Tabs */}
                 <div className="flex gap-6 border-b border-slate-800 mb-6">
-                  {["Overview", "Traces", "Logs", "Metrics", "AI Analysis"].map(tab => (
+                  {["Overview", "Traces", "Logs", "Metrics", "Scores", "AI Analysis"].map(tab => (
                     <button
                       key={tab}
                       onClick={() => handleTabClick(tab)}
@@ -862,6 +876,191 @@ export default function App() {
                       </div>
                       <div className="text-[10px] text-slate-500 italic">
                         Showing {getMetricTypeForMode(monitoringMode)} for {selectedService === "All Services" ? "all services" : selectedService}
+                      </div>
+                    </div>
+                  ) : activeTab === "Scores" && selectedTrace ? (
+                    <div className="space-y-5 animate-in fade-in max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
+                      {/* ── Anomaly Score Gauge ─────────────────────── */}
+                      <div className="bg-slate-950/50 p-5 rounded-xl border border-slate-800">
+                        <div className="text-[9px] text-slate-500 uppercase font-bold tracking-widest mb-4">Anomaly Score</div>
+                        <div className="flex items-center gap-6">
+                          <div className="relative w-20 h-20 flex-shrink-0">
+                            <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                              <circle cx="18" cy="18" r="15.91" fill="none" stroke="#1e293b" strokeWidth="3" />
+                              <circle cx="18" cy="18" r="15.91" fill="none"
+                                stroke={(() => {
+                                  const s = selectedTrace.anomaly_score ?? 0;
+                                  if (s >= 0.8) return "#f43f5e";
+                                  if (s >= 0.5) return "#f59e0b";
+                                  return "#10b981";
+                                })()}
+                                strokeWidth="3" strokeLinecap="round"
+                                strokeDasharray={`${(selectedTrace.anomaly_score ?? 0) * 100} ${100 - (selectedTrace.anomaly_score ?? 0) * 100}`}
+                                className="transition-all duration-1000"
+                              />
+                            </svg>
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className="text-lg font-black text-white">{(selectedTrace.anomaly_score ?? 0).toFixed(2)}</span>
+                            </div>
+                          </div>
+                          <div className="flex-1 space-y-2">
+                            <div className="flex justify-between text-xs">
+                              <span className="text-slate-400">Classification</span>
+                              <span className={cn("font-bold",
+                                (selectedTrace.anomaly_score ?? 0) >= 0.8 ? "text-rose-400" :
+                                (selectedTrace.anomaly_score ?? 0) >= 0.5 ? "text-amber-400" : "text-emerald-400"
+                              )}>
+                                {(selectedTrace.anomaly_score ?? 0) >= 0.8 ? "Critical" :
+                                 (selectedTrace.anomaly_score ?? 0) >= 0.5 ? "Warning" : "Low Risk"}
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-slate-400">Anomaly Type</span>
+                              <span className={cn("font-bold", styleFor(selectedTrace.anomaly_type).text)}>
+                                {selectedTrace.anomaly_type || "Unclassified"}
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-slate-400">Is Anomaly</span>
+                              <span className={cn("font-bold", selectedTrace.is_anomaly ? "text-rose-400" : "text-emerald-400")}>
+                                {selectedTrace.is_anomaly ? "Yes" : "No"}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* ── ML Model Scores ────────────────────────── */}
+                      {(() => {
+                        const mlScores = selectedTrace.ml_scores || {};
+                        const mlEntries = Object.entries(mlScores);
+                        if (!mlEntries.length) return null;
+                        return (
+                          <div className="bg-slate-950/50 p-5 rounded-xl border border-slate-800">
+                            <div className="text-[9px] text-slate-500 uppercase font-bold tracking-widest mb-4">ML Ensemble Scores</div>
+                            <div className="space-y-3">
+                              {mlEntries.map(([name, val]) => {
+                                const pct = Math.max(0, Math.min(1, Number(val) || 0)) * 100;
+                                const isHigh = pct > 70;
+                                const isMed = pct > 40;
+                                return (
+                                  <div key={name}>
+                                    <div className="flex justify-between text-[11px] mb-1.5">
+                                      <span className="text-slate-300 font-medium font-mono">{name}</span>
+                                      <span className={cn("font-black tabular-nums",
+                                        isHigh ? "text-rose-400" : isMed ? "text-amber-400" : "text-emerald-400"
+                                      )}>{Number(val).toFixed(3)}</span>
+                                    </div>
+                                    <div className="h-2 bg-slate-900 rounded-full overflow-hidden ring-1 ring-slate-800">
+                                      <div
+                                        className={cn("h-full rounded-full transition-all duration-700",
+                                          isHigh ? "bg-gradient-to-r from-rose-600 to-rose-400 shadow-[0_0_8px_rgba(244,63,94,0.4)]" :
+                                          isMed ? "bg-gradient-to-r from-amber-600 to-amber-400" :
+                                          "bg-gradient-to-r from-emerald-600 to-emerald-400"
+                                        )}
+                                        style={{ width: `${pct}%` }}
+                                      />
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <div className="mt-3 pt-3 border-t border-slate-800 flex justify-between text-[10px]">
+                              <span className="text-slate-500">Ensemble Average</span>
+                              <span className="text-white font-bold">
+                                {(mlEntries.reduce((sum, [, v]) => sum + (Number(v) || 0), 0) / mlEntries.length).toFixed(3)}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* ── Rule Detectors ─────────────────────────── */}
+                      {(() => {
+                        const flags = selectedTrace.rule_flags || {};
+                        return (
+                          <div className="bg-slate-950/50 p-5 rounded-xl border border-slate-800">
+                            <div className="text-[9px] text-slate-500 uppercase font-bold tracking-widest mb-4">Rule Detector Flags</div>
+                            <div className="space-y-2">
+                              {RULE_PILLS.map(pill => {
+                                const active = !!flags[pill.key];
+                                const meta = flags[pill.metaKey];
+                                const detail = pill.fmt(meta);
+                                return (
+                                  <div key={pill.key} className={cn(
+                                    "flex items-center justify-between p-2.5 rounded-lg border transition-all",
+                                    active
+                                      ? `${PILL_COLOR[pill.color]} border-opacity-50`
+                                      : "bg-slate-900/40 border-slate-800 text-slate-600"
+                                  )}>
+                                    <div className="flex items-center gap-2.5">
+                                      <div className={cn("w-2 h-2 rounded-full",
+                                        active ? `bg-${pill.color}-500 shadow-[0_0_6px_rgba(255,255,255,0.2)]` : "bg-slate-700"
+                                      )} />
+                                      <span className={cn("text-[11px] font-bold", active ? "" : "text-slate-600")}>{pill.label}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      {detail && <span className="text-[10px] font-mono font-bold">{detail}</span>}
+                                      <span className={cn("text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded",
+                                        active ? "bg-white/10 text-white" : "bg-slate-800 text-slate-600"
+                                      )}>{active ? "FIRED" : "CLEAR"}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* ── Detector Reasons ───────────────────────── */}
+                      {(selectedTrace.reasons || []).length > 0 && (
+                        <div className="bg-slate-950/50 p-5 rounded-xl border border-slate-800">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold tracking-widest mb-3">Detector Reason Tags</div>
+                          <div className="flex flex-wrap gap-2">
+                            {selectedTrace.reasons.map((reason, i) => (
+                              <span key={i} className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-300 border border-indigo-500/30">
+                                {reason}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ── Event Attributes Grid ──────────────────── */}
+                      <div className="bg-slate-950/50 p-5 rounded-xl border border-slate-800">
+                        <div className="text-[9px] text-slate-500 uppercase font-bold tracking-widest mb-4">Event Attributes</div>
+                        <div className="grid grid-cols-2 gap-3">
+                          {[
+                            { label: "Service", value: selectedTrace.service, color: "text-indigo-400" },
+                            { label: "Route", value: selectedTrace.route || "—", color: "text-slate-200" },
+                            { label: "Duration", value: `${(selectedTrace.duration_ms ?? 0).toFixed(1)}ms`, color: "text-rose-400" },
+                            { label: "Anomaly Score", value: (selectedTrace.anomaly_score ?? 0).toFixed(4), color: "text-amber-400" },
+                            { label: "Trace ID", value: selectedTrace.trace_id, color: "text-indigo-400", mono: true, span: true },
+                            { label: "Timestamp", value: selectedTrace.timestamp ? new Date(selectedTrace.timestamp).toLocaleString() : "—", color: "text-slate-300", span: true },
+                          ].map((attr, i) => (
+                            <div key={i} className={cn("bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/50", attr.span ? "col-span-2" : "")}>
+                              <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">{attr.label}</div>
+                              <div className={cn("text-xs font-bold break-all", attr.color, attr.mono ? "font-mono" : "")}>{attr.value}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* ── Raw Event JSON ─────────────────────────── */}
+                      <div className="bg-slate-950/50 p-5 rounded-xl border border-slate-800">
+                        <div className="flex justify-between items-center mb-3">
+                          <div className="text-[9px] text-slate-500 uppercase font-bold tracking-widest">Raw Anomaly Event</div>
+                          <button
+                            onClick={() => navigator.clipboard.writeText(JSON.stringify(selectedTrace, null, 2))}
+                            className="text-[9px] text-indigo-400 hover:text-indigo-300 font-bold uppercase tracking-wider px-2 py-0.5 rounded border border-indigo-500/30 hover:border-indigo-500/50 transition-all"
+                          >
+                            Copy JSON
+                          </button>
+                        </div>
+                        <pre className="text-[10px] text-slate-400 font-mono bg-slate-900/60 p-3 rounded-lg border border-slate-800/50 max-h-48 overflow-y-auto custom-scrollbar leading-relaxed whitespace-pre-wrap">
+                          {JSON.stringify(selectedTrace, null, 2)}
+                        </pre>
                       </div>
                     </div>
                   ) : (

@@ -241,7 +241,7 @@ storage = SQLiteStorage()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-3-flash-preview')
+    model = genai.GenerativeModel('gemini-2.5-flash')
 else:
     logger.warning("GEMINI_API_KEY not set. AI RCA will be unavailable.")
     model = None
@@ -396,14 +396,14 @@ async def analyze_trace(trace_id: str, event: AnomalyEvent):
     avg_span_dur = sum(durations) / len(durations) if durations else 0
 
     # ── Dependency chain (parent → child relationships) ─────────────
-    span_ids = {s.get("span_id", "") for s in spans if s.get("span_id")}
+    span_ids = {s.get("span_id") or "" for s in spans if s.get("span_id")}
     dep_chain_lines = []
     dangling_parents = []
     for s in spans:
-        parent = s.get("parent_span_id", "")
-        sid = s.get("span_id", "")
-        svc = s.get("service", "?")
-        name = s.get("name", "?")
+        parent = s.get("parent_span_id") or ""
+        sid = s.get("span_id") or ""
+        svc = s.get("service") or "?"
+        name = s.get("name") or "?"
         if parent and parent in span_ids:
             dep_chain_lines.append(f"  {parent[:8]}… → {sid[:8]}… ({svc}::{name})")
         elif parent and parent not in span_ids:
@@ -442,9 +442,9 @@ async def analyze_trace(trace_id: str, event: AnomalyEvent):
     span_summary_lines = []
     for s in spans[:20]:
         line = (
-            f"  - {s.get('service','?')}::{s.get('name','?')} "
-            f"dur={s.get('duration_ms',0):.0f}ms status={s.get('status_code',0)} "
-            f"span={s.get('span_id','')[:8]}… parent={s.get('parent_span_id','')[:8]}…"
+            f"  - {s.get('service') or '?'}::{s.get('name') or '?'} "
+            f"dur={s.get('duration_ms') or 0:.0f}ms status={s.get('status_code') or 0} "
+            f"span={(s.get('span_id') or '')[:8]}… parent={(s.get('parent_span_id') or '')[:8]}…"
         )
         if s.get("is_anomaly"):
             line += " [ANOMALOUS]"

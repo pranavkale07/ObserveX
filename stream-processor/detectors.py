@@ -120,9 +120,13 @@ class RuleDetectorScorer(Scorer):
         )
         fire = False
         if state["n"] >= self.BIMODAL_WARMUP and state["seeded"]:
-            std = math.sqrt(state["var"])
+            std = math.sqrt(state["var"]) if state["var"] > 0 else 0.0
             if std > self.BIMODAL_STD_MS and state["mean"] > self.BIMODAL_MEAN_MIN_MS:
-                fire = True
+                # Only flag THIS trace if its duration is actually in the
+                # slow mode (above mean + 1σ). Without this guard, every
+                # trace from the service gets flagged once variance is high.
+                if duration_ms > state["mean"] + std:
+                    fire = True
         if not state["seeded"]:
             state["mean"] = duration_ms
             state["var"] = 0.0
@@ -149,9 +153,9 @@ class RuleDetectorScorer(Scorer):
 
 
 class MLScorer(Scorer):
-    """Adapter that plugs an ObserveXScorer (or any score_one/learn_one model)
-    into the `Scorer` contract. Does not call learn_one — the owner of the
-    ML instance is responsible for online updates."""
+    """Adapter that plugs an ObserveXScorer (five-model ensemble) into the
+    `Scorer` contract. Does not call learn_one — the owner of the ML
+    instance is responsible for online updates."""
 
     def __init__(self, ml_model):
         self.ml = ml_model
@@ -161,10 +165,11 @@ class MLScorer(Scorer):
         is_anom = bool(r.get("is_anomaly", False))
         per_model = {k: v for k, v in r.items()
                      if k not in ("aggregate_score", "is_anomaly", "observations")}
+        reason_tag = "ml_ensemble" if is_anom else None
         return {
             "score": float(r.get("aggregate_score", 0.0)),
             "is_anomaly": is_anom,
-            "reasons": ["ml_hs_trees"] if is_anom else [],
+            "reasons": [reason_tag] if reason_tag else [],
             "metadata": {},
             "per_model": per_model,
         }
@@ -260,8 +265,17 @@ def classify_anomaly(reasons: List[str], per_model: Dict) -> str:
         return "Dependency Chain Break"
     if "pii_redaction_density" in reasons:
         return "PII Redaction Density"
+    # Check individual ML models for dominant signal
+    if per_model.get("lof", 0.0) > 0.8:
+        return "Statistical Outlier (LOF)"
     if per_model.get("hs_trees", 0.0) > 0.8:
         return "Statistical Outlier (HS-Trees)"
-    if "ml_hs_trees" in reasons:
+    if per_model.get("isolation_forest", 0.0) > 0.8:
+        return "Statistical Outlier (Isolation Forest)"
+    if per_model.get("autoencoder_mse", 0.0) > 0.8:
+        return "Reconstruction Anomaly (Autoencoder)"
+    if per_model.get("one_class_svm", 0.0) > 0.8:
+        return "Boundary Anomaly (SVM)"
+    if "ml_ensemble" in reasons:
         return "ML Ensemble Anomaly"
     return "Unclassified Anomaly"
