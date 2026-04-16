@@ -55,7 +55,17 @@ pkill -9 -f "microservices/quote-service/main.py" || true
 OTEL_SERVICE_NAME=python-service "$PROJECT_DIR/instrumentation/python-wrapper/run_instrumented.sh" "$VENV/python" "$PROJECT_DIR/microservices/quote-service/main.py" > quote_service.log 2>&1 &
 echo "✅ Microservices started with Auto-Instrumentation."
 
-echo "🚦 [6/6] Triggering Baseline Traffic..."
+echo "🖥️  [6/7] Starting Dashboard Frontend..."
+cd "$PROJECT_DIR/dashboard/frontend"
+pkill -9 -f "vite.*dashboard/frontend" || true
+if [ ! -d "node_modules" ]; then
+  echo "📦 Installing frontend dependencies..."
+  npm install
+fi
+nohup npm run dev > frontend.log 2>&1 &
+echo "✅ Dashboard Frontend starting on port 5173."
+
+echo "🚦 [7/7] Triggering Baseline Traffic..."
 sleep 3  # Wait for services to start
 for i in {1..20}; do
   curl -s http://localhost:3001/api/proxy-slow-quote > /dev/null

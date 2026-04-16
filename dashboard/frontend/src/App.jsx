@@ -11,8 +11,66 @@ function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
+// Build a smooth SVG path from a series of values mapped into a viewBox.
+// Uses Catmull-Rom → Cubic Bezier so data lines look polished instead of
+// zig-zaggy when stretched to fill a card width.
+function smoothPath(values, { width = 100, height = 20, padding = 2 } = {}) {
+  if (!Array.isArray(values) || values.length === 0) return "";
+  if (values.length === 1) {
+    const y = height / 2;
+    return `M 0 ${y} L ${width} ${y}`;
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const points = values.map((v, i) => ({
+    x: (i / (values.length - 1)) * width,
+    y: height - padding - ((v - min) / range) * (height - padding * 2),
+  }));
+  let d = `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+  }
+  return d;
+}
+
 const BACKEND_URL = "http://localhost:8000";
 const WS_URL = "ws://localhost:8000/ws";
+
+// Maps backend `anomaly_type` → Tailwind classes for the row badge and panel header.
+const ANOMALY_STYLE = {
+  "N+1 Query Regression":            { text: "text-orange-300", bg: "bg-orange-500/15", border: "border-orange-500/30", dot: "bg-orange-500" },
+  "Bimodal Latency":                  { text: "text-amber-300", bg: "bg-amber-500/15", border: "border-amber-500/30", dot: "bg-amber-500" },
+  "Dependency Chain Break":           { text: "text-red-300", bg: "bg-red-600/15", border: "border-red-600/30", dot: "bg-red-600" },
+  "PII Redaction Density":            { text: "text-purple-300", bg: "bg-purple-500/15", border: "border-purple-500/30", dot: "bg-purple-500" },
+  "Statistical Outlier (HS-Trees)":   { text: "text-sky-300", bg: "bg-sky-500/15", border: "border-sky-500/30", dot: "bg-sky-500" },
+  "ML Ensemble Anomaly":              { text: "text-blue-300", bg: "bg-blue-500/15", border: "border-blue-500/30", dot: "bg-blue-500" },
+  "Unclassified Anomaly":             { text: "text-slate-300", bg: "bg-slate-500/15", border: "border-slate-500/30", dot: "bg-slate-500" },
+};
+const DEFAULT_STYLE = { text: "text-rose-300", bg: "bg-rose-500/15", border: "border-rose-500/30", dot: "bg-rose-500" };
+const styleFor = (type) => ANOMALY_STYLE[type] || DEFAULT_STYLE;
+
+// Rule-flag → pill metadata. `fmt` renders the numeric detail (count / variance / ratio).
+const RULE_PILLS = [
+  { key: "n_plus_1",         label: "N+1 Queries",      metaKey: "n_plus_1_count",   fmt: (v) => v > 0 ? `×${v}` : null, color: "orange" },
+  { key: "bimodal_latency",  label: "Bimodal Latency",  metaKey: "latency_variance", fmt: (v) => v > 0 ? `σ²≈${Math.round(v).toLocaleString()}` : null, color: "amber" },
+  { key: "dependency_break", label: "Dangling Parent",  metaKey: "dangling_span",    fmt: (v) => v ? `@${v}` : null, color: "red" },
+  { key: "pii_density",      label: "PII Density",      metaKey: "redaction_ratio",  fmt: (v) => v > 0 ? `${Math.round(v * 100)}%` : null, color: "purple" },
+];
+const PILL_COLOR = {
+  orange: "bg-orange-500/10 text-orange-300 border-orange-500/30",
+  amber:  "bg-amber-500/10 text-amber-300 border-amber-500/30",
+  red:    "bg-red-500/10 text-red-300 border-red-500/30",
+  purple: "bg-purple-500/10 text-purple-300 border-purple-500/30",
+};
 
 export default function App() {
   const [anomalies, setAnomalies] = useState([]);
@@ -61,12 +119,24 @@ export default function App() {
       const alertData = await alertRes.json();
       setAnomalies(alertData);
 
-      // Fetch metrics history for current service context
+      // Fetch metrics history for current service context.
+      // Fetch both the chart metric (p99/redaction) AND throughput so the
+      // summary StatCard has data on first paint instead of waiting for WS.
       const metricType = getMetricTypeForMode(monitoringMode);
-      const metricRes = await fetch(`${BACKEND_URL}/api/metrics/${selectedService}/${metricType}`);
-      if (!metricRes.ok) throw new Error("Failed to fetch metrics");
-      const metricData = await metricRes.json();
-      setMetrics(metricData);
+      const typesToFetch = metricType === "throughput"
+        ? [metricType]
+        : [metricType, "throughput"];
+      const metricResults = await Promise.all(
+        typesToFetch.map(t =>
+          fetch(`${BACKEND_URL}/api/metrics/${selectedService}/${t}`)
+            .then(r => r.ok ? r.json() : [])
+            .catch(() => [])
+        )
+      );
+      const merged = metricResults.flat().sort((a, b) =>
+        new Date(a.timestamp) - new Date(b.timestamp)
+      );
+      setMetrics(merged);
     } catch (err) { console.error(err); }
     finally { setIsLoading(false); }
   };
@@ -156,10 +226,27 @@ export default function App() {
     if (tab === "AI Analysis" && traceContext && !analysis && !isAnalyzing) {
       setIsAnalyzing(true);
       try {
+        const rcaPayload = {
+          ...traceContext,
+          service: selectedTrace?.service,
+          route: selectedTrace?.route,
+          anomaly_score: selectedTrace?.anomaly_score,
+          anomaly_type: selectedTrace?.anomaly_type,
+          reasons: selectedTrace?.reasons,
+          rule_flags: selectedTrace?.rule_flags,
+          ml_scores: selectedTrace?.ml_scores,
+          spans: (traceContext.spans || []).map(s => ({
+            name: s.name,
+            service: s.service,
+            duration_ms: s.duration,
+            status_code: s.status_code,
+            is_anomaly: s.is_anomaly,
+          })),
+        };
         const response = await fetch(`${BACKEND_URL}/api/rca/${traceContext.trace_id}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(traceContext)
+          body: JSON.stringify(rcaPayload)
         });
         const data = await response.json();
         setAnalysis({ ...data, traceData: traceContext });
@@ -227,32 +314,46 @@ export default function App() {
         ((throughputs[throughputs.length - 1] - throughputs[throughputs.length - 2])).toFixed(0)
       : "—";
 
-    return { throughput: throughputVal, p99: latencyVal, errorRate, latencyTrend, throughputTrend };
+    // Sparkline series for each StatCard — keep short tails so the cards
+    // render a recent-trend sparkline rather than a static decorative wave.
+    const throughputSeries = throughputs.slice(-20);
+    const p99Series = latencies.slice(-20);
+    // Anomaly-rate sparkline: rolling ratio of is_anomaly over the last N alerts
+    // (oldest → newest), bucketed in small windows so the line has shape.
+    const chronAlerts = [...anomalies].reverse(); // anomalies are newest-first in state
+    const bucket = 3;
+    const anomalySeries = [];
+    for (let i = bucket; i <= chronAlerts.length; i++) {
+      const slice = chronAlerts.slice(Math.max(0, i - 10), i);
+      const anomCount = slice.filter(a => a.is_anomaly).length;
+      anomalySeries.push((anomCount / slice.length) * 100);
+    }
+
+    return {
+      throughput: throughputVal, p99: latencyVal, errorRate,
+      latencyTrend, throughputTrend,
+      throughputSeries, p99Series,
+      anomalySeries: anomalySeries.slice(-20),
+    };
   }, [metrics, anomalies]);
 
   // Derive dynamic data for resource charts from metrics
   const resourceChartData = useMemo(() => {
     const throughputs = metrics.filter(m => m.metric_type === "throughput").map(m => m.value);
     const latencies = metrics.filter(m => m.metric_type === "p99_latency").map(m => m.value);
-    // Normalize throughputs to percentage (0-100) based on max
-    const maxT = Math.max(...throughputs, 1);
-    const cpuBars = throughputs.slice(-12).map(v => Math.min(100, Math.round((v / maxT) * 80 + 10)));
-    // Build SVG path from latencies
-    const latSlice = latencies.slice(-10);
-    let memPath = "M0 15";
-    if (latSlice.length > 1) {
-      const maxL = Math.max(...latSlice, 1);
-      latSlice.forEach((v, i) => {
-        const x = (i / (latSlice.length - 1)) * 100;
-        const y = 20 - (v / maxL) * 18;
-        memPath += ` L ${x.toFixed(0)} ${y.toFixed(1)}`;
-      });
-    } else {
-      memPath = "M0 15 Q 20 18, 40 10 T 80 5 T 100 15";
-    }
+    // Scale the throughput bars against a running max so early bursts don't
+    // pin every bar at 90%+ and look chunky. Soft floor of 15% keeps empty
+    // windows visible.
+    const tailT = throughputs.slice(-20);
+    const maxT = Math.max(...tailT, 1);
+    const cpuBars = tailT.map(v => Math.max(15, Math.min(100, Math.round((v / maxT) * 85 + 8))));
+    const memPath = latencies.length > 1
+      ? smoothPath(latencies.slice(-20), { width: 100, height: 20, padding: 2 })
+      : "M 0 15 Q 20 18, 40 10 T 80 5 T 100 15";
     return {
       cpuBars: cpuBars.length > 0 ? cpuBars : [20, 30, 25, 40, 35, 30, 20, 25, 30, 35, 40, 30],
       memPath,
+      hasMemData: latencies.length > 1,
     };
   }, [metrics]);
 
@@ -405,9 +506,9 @@ export default function App() {
 
         {/* Stats Grid */}
         <div className="grid grid-cols-3 gap-6 mb-8">
-          <StatCard label="Throughput" value={summaryStats.throughput} trend={summaryStats.throughputTrend} icon={<Activity className="text-indigo-400" />} color="indigo" />
-          <StatCard label="P99 Latency" value={summaryStats.p99} trend={summaryStats.latencyTrend} icon={<Clock3 className="text-rose-400" />} color="rose" />
-          <StatCard label="Anomaly Rate" value={summaryStats.errorRate} trend={anomalies.length > 0 ? `${anomalies.length} alerts` : "Normal"} icon={<Shield className="text-emerald-400" />} color="emerald" />
+          <StatCard label="Throughput" value={summaryStats.throughput} trend={summaryStats.throughputTrend} icon={<Activity className="text-indigo-400" />} color="indigo" series={summaryStats.throughputSeries} />
+          <StatCard label="P99 Latency" value={summaryStats.p99} trend={summaryStats.latencyTrend} icon={<Clock3 className="text-rose-400" />} color="rose" series={summaryStats.p99Series} />
+          <StatCard label="Anomaly Rate" value={summaryStats.errorRate} trend={anomalies.length > 0 ? `${anomalies.length} alerts` : "Normal"} icon={<Shield className="text-emerald-400" />} color="emerald" series={summaryStats.anomalySeries} />
         </div>
 
         {/* Chart View */}
@@ -487,13 +588,20 @@ export default function App() {
             {selectedTrace ? (
               <div className="glass-morphism rounded-2xl p-6 border border-slate-800 animate-in fade-in slide-in-from-bottom-2 min-h-[500px] flex flex-col">
                 <div className="flex justify-between items-start mb-6">
-                  <div>
-                    <span className="text-[10px] font-black uppercase text-rose-500 bg-rose-500/10 px-2 py-0.5 rounded tracking-widest border border-rose-500/20">Critical Severity</span>
-                    <h4 className="text-xl font-bold mt-2">Critical Latency Spike in {selectedTrace.service}</h4>
-                    <p className="text-xs text-slate-400 flex items-center gap-2 mt-1">
-                      <Server className="w-3 h-3" /> {selectedTrace.service} | Region: us-east-1
-                    </p>
-                  </div>
+                  {(() => {
+                    const ts = styleFor(selectedTrace.anomaly_type);
+                    return (
+                      <div>
+                        <span className={cn("text-[10px] font-black uppercase px-2 py-0.5 rounded tracking-widest border", ts.text, ts.bg, ts.border)}>
+                          {selectedTrace.anomaly_type || "Critical Severity"}
+                        </span>
+                        <h4 className="text-xl font-bold mt-2">{selectedTrace.anomaly_type ? `${selectedTrace.anomaly_type} in ${selectedTrace.service}` : `Critical Latency Spike in ${selectedTrace.service}`}</h4>
+                        <p className="text-xs text-slate-400 flex items-center gap-2 mt-1">
+                          <Server className="w-3 h-3" /> {selectedTrace.service} {selectedTrace.route ? `| ${selectedTrace.route}` : ""}
+                        </p>
+                      </div>
+                    );
+                  })()}
                   <button onClick={() => setSelectedTrace(null)} className="p-1 hover:bg-slate-800 rounded-full transition-colors">
                     <X className="w-4 h-4 text-slate-500" />
                   </button>
@@ -656,6 +764,55 @@ export default function App() {
                     </div>
                   ) : activeTab === "Overview" && selectedTrace ? (
                     <div className="space-y-4 animate-in fade-in">
+                      {(() => {
+                        const flags = selectedTrace.rule_flags || {};
+                        const activePills = RULE_PILLS
+                          .map(p => ({ ...p, active: !!flags[p.key], meta: flags[p.metaKey] }))
+                          .filter(p => p.active);
+                        const mlScores = selectedTrace.ml_scores || {};
+                        const mlEntries = Object.entries(mlScores);
+                        if (!activePills.length && !mlEntries.length) return null;
+                        return (
+                          <div className="bg-slate-950/50 p-4 rounded-lg border border-slate-800 space-y-4">
+                            {activePills.length > 0 && (
+                              <div>
+                                <div className="text-[9px] text-slate-500 uppercase font-bold mb-2 tracking-widest">Detectors Fired</div>
+                                <div className="flex flex-wrap gap-2">
+                                  {activePills.map(p => {
+                                    const detail = p.fmt(p.meta);
+                                    return (
+                                      <span key={p.key} className={cn("text-[10px] font-bold px-2 py-0.5 rounded border", PILL_COLOR[p.color])}>
+                                        {p.label}{detail ? ` ${detail}` : ""}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                            {mlEntries.length > 0 && (
+                              <div>
+                                <div className="text-[9px] text-slate-500 uppercase font-bold mb-2 tracking-widest">ML Scores</div>
+                                <div className="space-y-2">
+                                  {mlEntries.map(([name, val]) => {
+                                    const pct = Math.max(0, Math.min(1, Number(val) || 0)) * 100;
+                                    return (
+                                      <div key={name}>
+                                        <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+                                          <span className="font-mono">{name}</span>
+                                          <span className="font-bold text-slate-200">{pct.toFixed(1)}%</span>
+                                        </div>
+                                        <div className="h-1.5 bg-slate-900 rounded-full overflow-hidden ring-1 ring-slate-800">
+                                          <div className="h-full bg-sky-500 rounded-full transition-all duration-700" style={{ width: `${pct}%` }} />
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                       <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Incident Overview</label>
                       <div className="grid grid-cols-2 gap-4">
                         <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800">
@@ -744,13 +901,29 @@ export default function App() {
               <span className="text-[8px] text-indigo-400 font-mono italic">Live Streams</span>
             </div>
             <div className="h-24 w-full">
-              <svg viewBox="0 0 100 20" className="w-full h-full overflow-visible">
+              <svg viewBox="0 0 100 20" preserveAspectRatio="none" className="w-full h-full overflow-visible">
+                <defs>
+                  <linearGradient id="mem-grad" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="0%" stopColor="#818cf8" stopOpacity="0.4" />
+                    <stop offset="100%" stopColor="#818cf8" stopOpacity="0" />
+                  </linearGradient>
+                </defs>
+                {resourceChartData.hasMemData && (
+                  <path
+                    d={`${resourceChartData.memPath} L 100 20 L 0 20 Z`}
+                    fill="url(#mem-grad)"
+                    stroke="none"
+                  />
+                )}
                 <path
                   d={resourceChartData.memPath}
                   fill="none"
                   stroke="#818cf8"
-                  strokeWidth="2"
-                  className="animate-wave"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                  className={resourceChartData.hasMemData ? "" : "animate-wave"}
                 />
               </svg>
             </div>
@@ -762,21 +935,29 @@ export default function App() {
 }
 
 function AnomalyRow({ item, onClick }) {
+  const style = styleFor(item.anomaly_type);
   return (
     <div
       onClick={onClick}
       className="group bg-slate-900/40 p-3 rounded-xl border border-slate-800/50 hover:border-slate-700 hover:bg-slate-800/40 transition-all cursor-pointer flex items-center justify-between"
     >
-      <div className="flex items-center gap-4">
-        <div className="w-2 h-8 rounded-full bg-rose-500/20 flex items-center justify-center">
-          <div className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
+      <div className="flex items-center gap-4 min-w-0">
+        <div className={cn("w-2 h-8 rounded-full flex items-center justify-center", style.bg)}>
+          <div className={cn("w-1.5 h-1.5 rounded-full shadow-[0_0_8px_rgba(244,63,94,0.5)]", style.dot)} />
         </div>
-        <div>
-          <div className="text-sm font-bold text-slate-200">{item.service} <span className="text-slate-500 font-medium">→ {item.route}</span></div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="text-sm font-bold text-slate-200 truncate">{item.service} <span className="text-slate-500 font-medium">→ {item.route}</span></div>
+            {item.anomaly_type && (
+              <span className={cn("text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border", style.text, style.bg, style.border)}>
+                {item.anomaly_type}
+              </span>
+            )}
+          </div>
           <div className="text-[10px] text-slate-500 font-mono">#{(item.trace_id ?? "").slice(0, 12)} • {new Date(item.timestamp).toLocaleTimeString()}</div>
         </div>
       </div>
-      <div className="text-right">
+      <div className="text-right flex items-center gap-2">
         <div className="text-sm font-black text-rose-500">{(item.duration_ms ?? 0).toFixed(0)}ms</div>
         <ChevronRight className="w-4 h-4 text-slate-600 group-hover:translate-x-1 transition-transform" />
       </div>
@@ -844,7 +1025,14 @@ const statCardColorMap = {
   emerald: "text-emerald-400 bg-emerald-400/10",
 };
 
-function StatCard({ label, value, trend, icon, color }) {
+function StatCard({ label, value, trend, color, series }) {
+  const stroke = color === 'indigo' ? '#6366f1' : color === 'rose' ? '#f43f5e' : '#10b981';
+  const gradId = `spark-grad-${color}`;
+  const hasData = Array.isArray(series) && series.length >= 2;
+  const sparkPath = hasData
+    ? smoothPath(series, { width: 100, height: 20, padding: 2 })
+    : "M 0 15 Q 10 5, 20 15 T 40 15 T 60 5 T 80 15 T 100 10";
+  const areaPath = hasData ? `${sparkPath} L 100 20 L 0 20 Z` : null;
   return (
     <div className="bg-slate-900/40 border border-slate-800/50 p-6 rounded-2xl relative overflow-hidden group hover:border-slate-700 transition-all">
       <div className="flex justify-between items-start mb-6">
@@ -857,16 +1045,24 @@ function StatCard({ label, value, trend, icon, color }) {
         </div>
       </div>
 
-      {/* Sparkline Wave */}
       <div className="h-12 w-full mt-4">
-        <svg viewBox="0 0 100 20" className="w-full h-full overflow-visible">
+        <svg viewBox="0 0 100 20" preserveAspectRatio="none" className="w-full h-full overflow-visible">
+          <defs>
+            <linearGradient id={gradId} x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor={stroke} stopOpacity="0.35" />
+              <stop offset="100%" stopColor={stroke} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          {areaPath && <path d={areaPath} fill={`url(#${gradId})`} stroke="none" />}
           <path
-            d="M0 15 Q 10 5, 20 15 T 40 15 T 60 5 T 80 15 T 100 10"
+            d={sparkPath}
             fill="none"
-            stroke={color === 'indigo' ? '#6366f1' : color === 'rose' ? '#f43f5e' : '#10b981'}
+            stroke={stroke}
             strokeWidth="1.5"
             strokeLinecap="round"
-            className="animate-wave"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+            className={hasData ? "" : "animate-wave"}
           />
         </svg>
       </div>

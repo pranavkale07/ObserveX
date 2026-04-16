@@ -69,9 +69,24 @@ class SQLiteStorage(TelemetryStorage):
                     duration_ms REAL,
                     trace_id TEXT,
                     timestamp TEXT,
-                    spans_json TEXT
+                    spans_json TEXT,
+                    reasons_json TEXT,
+                    ml_scores_json TEXT,
+                    rule_flags_json TEXT,
+                    anomaly_type TEXT
                 )
             """)
+            # Idempotent migrations for pre-existing DBs.
+            for col_sql in (
+                "ALTER TABLE alerts ADD COLUMN reasons_json TEXT",
+                "ALTER TABLE alerts ADD COLUMN ml_scores_json TEXT",
+                "ALTER TABLE alerts ADD COLUMN rule_flags_json TEXT",
+                "ALTER TABLE alerts ADD COLUMN anomaly_type TEXT",
+            ):
+                try:
+                    await db.execute(col_sql)
+                except Exception:
+                    pass
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS metrics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,10 +124,15 @@ class SQLiteStorage(TelemetryStorage):
     async def save_alert(self, alert: Dict):
         async with aiosqlite.connect(self.db_path) as db:
             spans_json = json.dumps(alert.get("spans", []))
+            reasons_json = json.dumps(alert.get("reasons") or [])
+            ml_scores_json = json.dumps(alert.get("ml_scores") or {})
+            rule_flags_json = json.dumps(alert.get("rule_flags") or {})
+            anomaly_type = alert.get("anomaly_type")
             await db.execute(
-                "INSERT INTO alerts (service, route, anomaly_score, is_anomaly, duration_ms, trace_id, timestamp, spans_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (alert["service"], alert["route"], alert["anomaly_score"], alert["is_anomaly"], 
-                 alert["duration_ms"], alert["trace_id"], alert["timestamp"], spans_json)
+                "INSERT INTO alerts (service, route, anomaly_score, is_anomaly, duration_ms, trace_id, timestamp, spans_json, reasons_json, ml_scores_json, rule_flags_json, anomaly_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (alert["service"], alert["route"], alert["anomaly_score"], alert["is_anomaly"],
+                 alert["duration_ms"], alert["trace_id"], alert["timestamp"], spans_json,
+                 reasons_json, ml_scores_json, rule_flags_json, anomaly_type)
             )
             await db.commit()
 
@@ -128,6 +148,9 @@ class SQLiteStorage(TelemetryStorage):
             for row in rows:
                 d = dict(row)
                 d["spans"] = json.loads(d["spans_json"]) if d.get("spans_json") else []
+                d["reasons"] = json.loads(d["reasons_json"]) if d.get("reasons_json") else []
+                d["ml_scores"] = json.loads(d["ml_scores_json"]) if d.get("ml_scores_json") else {}
+                d["rule_flags"] = json.loads(d["rule_flags_json"]) if d.get("rule_flags_json") else {}
                 results.append(d)
             return results
 
@@ -230,6 +253,11 @@ class SpanInfo(BaseModel):
     service: str
     duration_ms: float
     start_time: str
+    trace_id: Optional[str] = None
+    span_id: Optional[str] = None
+    parent_span_id: Optional[str] = None
+    status_code: Optional[int] = None
+    is_anomaly: Optional[bool] = None
 
 class AnomalyEvent(BaseModel):
     service: str
@@ -240,6 +268,10 @@ class AnomalyEvent(BaseModel):
     trace_id: str
     timestamp: str
     spans: Optional[List[SpanInfo]] = None
+    reasons: Optional[List[str]] = None
+    ml_scores: Optional[Dict[str, float]] = None
+    rule_flags: Optional[Dict[str, Any]] = None
+    anomaly_type: Optional[str] = None
 
 class TraceInventory(BaseModel):
     trace_id: str
@@ -340,23 +372,103 @@ async def get_logs(service: Optional[str] = None, severity: Optional[str] = None
 async def analyze_trace(trace_id: str, trace_data: Dict):
     if not model:
         raise HTTPException(status_code=503, detail="Gemini API not configured")
-    
-    prompt = f"""
-    You are an expert SRE. Analyze this anomalous trace ID: {trace_id}.
-    
-    FORENSIC CONTEXT:
-    {json.dumps(trace_data, indent=2)}
-    
-    MISSION: Identify why this specific request failed or was slow.
-    
-    FORMAT YOUR RESPONSE AS STRICT JSON:
-    {{
-      "root_cause": "brief explanation (max 20 words)",
-      "suggested_fixes": ["fix 1", "fix 2"],
-      "risk_prediction": "one-sentence impact if not solved",
-      "confidence": 0.95
-    }}
-    """
+
+    anomaly_type = trace_data.get("anomaly_type") or "Unclassified Anomaly"
+    reasons = trace_data.get("reasons") or []
+    rule_flags = trace_data.get("rule_flags") or {}
+    ml_scores = trace_data.get("ml_scores") or {}
+    service = trace_data.get("service", "unknown")
+    route = trace_data.get("route", "unknown")
+    duration_ms = trace_data.get("duration_ms", 0)
+    anomaly_score = trace_data.get("anomaly_score", 0)
+    spans = trace_data.get("spans") or []
+
+    fired_detectors = []
+    if rule_flags.get("n_plus_1"):
+        fired_detectors.append(
+            f"N+1 Query Regression — span_count={rule_flags.get('n_plus_1_count', 0)} "
+            "(Chebyshev bound on rolling span-count distribution)"
+        )
+    if rule_flags.get("bimodal_latency"):
+        fired_detectors.append(
+            f"Bimodal Latency — EWMA variance≈{rule_flags.get('latency_variance', 0.0):.1f} "
+            "(σ exceeds threshold → latency distribution has split into two modes)"
+        )
+    if rule_flags.get("dependency_break"):
+        fired_detectors.append(
+            f"Dependency Chain Break — dangling span '{rule_flags.get('dangling_span')}' "
+            "(parent_span_id references a span not present in the reconstructed trace)"
+        )
+    if rule_flags.get("pii_density"):
+        ratio = rule_flags.get("redaction_ratio", 0.0)
+        fired_detectors.append(
+            f"PII Redaction Density — {ratio*100:.0f}% of logs in 60s window redacted "
+            "(possible data-exfil path or misconfigured logger)"
+        )
+    detectors_block = "\n".join(f"- {d}" for d in fired_detectors) or "- (none; ML-only detection)"
+
+    ml_block = "\n".join(f"- {name}: {float(v):.3f}" for name, v in ml_scores.items()) or "- (no ML scores)"
+
+    span_summary_lines = []
+    for s in spans[:15]:
+        span_summary_lines.append(
+            f"  - {s.get('service','?')}::{s.get('name','?')} "
+            f"dur={s.get('duration_ms',0):.0f}ms status={s.get('status_code',0)}"
+            + (" [ANOMALOUS]" if s.get("is_anomaly") else "")
+        )
+    spans_block = "\n".join(span_summary_lines) or "  (no spans)"
+
+    logs_block = "(no correlated logs)"
+    try:
+        trace_logs = await storage.get_logs(trace_id=trace_id, limit=20)
+        if trace_logs:
+            log_lines = []
+            for lg in trace_logs:
+                log_lines.append(
+                    f"  - [{lg.get('severity','INFO')}] {lg.get('service_name','?')}: "
+                    f"{(lg.get('body','') or '')[:240]}"
+                )
+            logs_block = "\n".join(log_lines)
+    except Exception as e:
+        logger.warning(f"Could not fetch correlated logs for RCA {trace_id}: {e}")
+
+    prompt = f"""You are an expert SRE performing root-cause analysis on an anomalous distributed trace.
+The upstream pipeline has already classified the anomaly and run rule + ML detectors — use their
+verdicts as primary evidence. Do not re-derive; reason over them.
+
+TRACE: {trace_id}
+SERVICE: {service}    ROUTE: {route}
+DURATION: {duration_ms:.0f}ms    ANOMALY_SCORE: {anomaly_score:.2f}
+
+CLASSIFIED ANOMALY TYPE: {anomaly_type}
+REASONS (detector tags): {reasons}
+
+RULE DETECTORS FIRED:
+{detectors_block}
+
+ML SCORES (online HS-Trees; 0→normal, 1→anomalous):
+{ml_block}
+
+SPAN INVENTORY (first 15):
+{spans_block}
+
+CORRELATED LOGS (flushed by trace_id at anomaly time):
+{logs_block}
+
+MISSION:
+1. Explain WHY this trace tripped the detectors that fired — be specific about the
+   structural evidence (e.g. "12 sequential DB spans point to a missing JOIN").
+2. If multiple detectors fired, identify which is the root vs. which is a downstream symptom.
+3. Propose fixes that address the root cause, not the symptom.
+
+Respond as STRICT JSON (no markdown fences):
+{{
+  "root_cause": "brief explanation tied to the fired detectors (max 25 words)",
+  "suggested_fixes": ["concrete fix 1", "concrete fix 2"],
+  "risk_prediction": "one-sentence impact if unresolved",
+  "confidence": 0.0-1.0
+}}
+"""
     
     try:
         response = model.generate_content(prompt)
