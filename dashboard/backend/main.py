@@ -241,7 +241,7 @@ storage = SQLiteStorage()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
+    model = genai.GenerativeModel('gemini-3-flash-preview')
 else:
     logger.warning("GEMINI_API_KEY not set. AI RCA will be unavailable.")
     model = None

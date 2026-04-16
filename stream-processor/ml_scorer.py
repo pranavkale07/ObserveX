@@ -1,7 +1,7 @@
 """Streaming ML scorer based on River HalfSpaceTrees.
 
 Online anomaly model with `learn_one` / `score_one`. Warmed up at startup on a
-synthetic telemetry corpus (`refs/synthetic_telemetry.jsonl`) that matches the
+synthetic telemetry corpus (`synthetic_telemetry.jsonl`) that matches the
 live OTel feature space (duration_ms, span_count, error_rate), then continues
 learning from real traffic.
 

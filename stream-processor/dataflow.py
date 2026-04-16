@@ -28,7 +28,7 @@ DASHBOARD_URL = "http://localhost:8000"
 SPAN_ANOMALY_MS = 500.0  # cosmetic per-span flag; trace-level verdict comes from scorer
 WARMUP_JSONL = os.getenv(
     "OBSERVEX_WARMUP_JSONL",
-    os.path.join(os.path.dirname(__file__), "..", "refs", "synthetic_telemetry.jsonl"),
+    os.path.join(os.path.dirname(__file__), "synthetic_telemetry.jsonl"),
 )
 
 logger = logging.getLogger(__name__)
