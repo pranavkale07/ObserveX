@@ -78,6 +78,8 @@ const PILL_COLOR = {
 
 export default function App() {
   const [anomalies, setAnomalies] = useState([]);
+  const [stats, setStats] = useState({ total_traces: 0, anomaly_count: 0 });
+  const [statsHistory, setStatsHistory] = useState([]);
   const [metrics, setMetrics] = useState([]);
   const [selectedTrace, setSelectedTrace] = useState(null);
   const [selectedService, setSelectedService] = useState("All Services");
@@ -105,6 +107,7 @@ export default function App() {
 
   // Load history and initialize WS
   useEffect(() => {
+    unmountedRef.current = false;
     fetchHistory();
     connectWS();
     return () => {
@@ -122,6 +125,17 @@ export default function App() {
       if (!alertRes.ok) throw new Error("Failed to fetch alerts");
       const alertData = await alertRes.json();
       setAnomalies(alertData);
+
+      fetch(`${BACKEND_URL}/api/stats`)
+        .then(r => r.ok ? r.json() : null)
+        .then(s => {
+          if (s) {
+            setStats(s);
+            const rate = s.total_traces > 0 ? (s.anomaly_count / s.total_traces) * 100 : 0;
+            setStatsHistory(prev => [...prev, rate].slice(-30));
+          }
+        })
+        .catch(() => {});
 
       // Fetch metrics history for current service context.
       // Fetch both the chart metric (p99/redaction) AND throughput so the
@@ -169,7 +183,22 @@ export default function App() {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "new_anomaly") {
-          setAnomalies(prev => [msg.data, ...prev].slice(0, 50));
+          setAnomalies(prev => {
+            const incoming = msg.data;
+            const key = incoming.id ?? `${incoming.trace_id}-${incoming.timestamp}`;
+            const filtered = prev.filter(a => (a.id ?? `${a.trace_id}-${a.timestamp}`) !== key);
+            return [incoming, ...filtered].slice(0, 50);
+          });
+          fetch(`${BACKEND_URL}/api/stats`)
+            .then(r => r.ok ? r.json() : null)
+            .then(s => {
+              if (s) {
+                setStats(s);
+                const rate = s.total_traces > 0 ? (s.anomaly_count / s.total_traces) * 100 : 0;
+                setStatsHistory(prev => [...prev, rate].slice(-30));
+              }
+            })
+            .catch(() => {});
         } else if (msg.type === "metric_update") {
           setMetrics(prev => [...prev, msg.data].slice(-60));
         } else if (msg.type === "history") {
@@ -186,7 +215,7 @@ export default function App() {
     setTraceContext(null);
     setTraceLogs([]);
     setTraceLogsLoading(true);
-    setActiveTab("Traces");
+    setActiveTab("Overview");
     try {
       // 1. Fetch FULL trace inventory for waterfall
       const traceRes = await fetch(`${BACKEND_URL}/api/traces/${alert.trace_id}`);
@@ -309,17 +338,14 @@ export default function App() {
   const summaryStats = useMemo(() => {
     const latencies = metrics.filter(m => m.metric_type === "p99_latency").map(m => m.value);
     const throughputs = metrics.filter(m => m.metric_type === "throughput").map(m => m.value);
-    const totalAnomalies = anomalies.filter(a => a.is_anomaly).length;
-    const totalAlerts = anomalies.length;
-
     const throughputVal = throughputs.length > 0
       ? throughputs.reduce((a, b) => a + b, 0).toFixed(0)
       : "—";
     const latencyVal = latencies.length > 0
       ? latencies[latencies.length - 1].toFixed(0) + "ms"
       : "—";
-    const errorRate = totalAlerts > 0
-      ? ((totalAnomalies / totalAlerts) * 100).toFixed(1) + "%"
+    const errorRate = stats.total_traces > 0
+      ? ((stats.anomaly_count / stats.total_traces) * 100).toFixed(1) + "%"
       : "0%";
     const latencyTrend = latencies.length > 0 && latencies[latencies.length - 1] > 500
       ? "Critical" : "Normal";
@@ -328,48 +354,17 @@ export default function App() {
         ((throughputs[throughputs.length - 1] - throughputs[throughputs.length - 2])).toFixed(0)
       : "—";
 
-    // Sparkline series for each StatCard — keep short tails so the cards
-    // render a recent-trend sparkline rather than a static decorative wave.
     const throughputSeries = throughputs.slice(-20);
     const p99Series = latencies.slice(-20);
-    // Anomaly-rate sparkline: rolling ratio of is_anomaly over the last N alerts
-    // (oldest → newest), bucketed in small windows so the line has shape.
-    const chronAlerts = [...anomalies].reverse(); // anomalies are newest-first in state
-    const bucket = 3;
-    const anomalySeries = [];
-    for (let i = bucket; i <= chronAlerts.length; i++) {
-      const slice = chronAlerts.slice(Math.max(0, i - 10), i);
-      const anomCount = slice.filter(a => a.is_anomaly).length;
-      anomalySeries.push((anomCount / slice.length) * 100);
-    }
+    const anomalySeries = statsHistory.slice(-20);
 
     return {
       throughput: throughputVal, p99: latencyVal, errorRate,
       latencyTrend, throughputTrend,
       throughputSeries, p99Series,
-      anomalySeries: anomalySeries.slice(-20),
+      anomalySeries,
     };
-  }, [metrics, anomalies]);
-
-  // Derive dynamic data for resource charts from metrics
-  const resourceChartData = useMemo(() => {
-    const throughputs = metrics.filter(m => m.metric_type === "throughput").map(m => m.value);
-    const latencies = metrics.filter(m => m.metric_type === "p99_latency").map(m => m.value);
-    // Scale the throughput bars against a running max so early bursts don't
-    // pin every bar at 90%+ and look chunky. Soft floor of 15% keeps empty
-    // windows visible.
-    const tailT = throughputs.slice(-20);
-    const maxT = Math.max(...tailT, 1);
-    const cpuBars = tailT.map(v => Math.max(15, Math.min(100, Math.round((v / maxT) * 85 + 8))));
-    const memPath = latencies.length > 1
-      ? smoothPath(latencies.slice(-20), { width: 100, height: 20, padding: 2 })
-      : "M 0 15 Q 20 18, 40 10 T 80 5 T 100 15";
-    return {
-      cpuBars: cpuBars.length > 0 ? cpuBars : [20, 30, 25, 40, 35, 30, 20, 25, 30, 35, 40, 30],
-      memPath,
-      hasMemData: latencies.length > 1,
-    };
-  }, [metrics]);
+  }, [metrics, anomalies, stats, statsHistory]);
 
   // Dynamic AI Insight from latest anomaly
   const aiInsight = useMemo(() => {
@@ -522,7 +517,7 @@ export default function App() {
         <div className="grid grid-cols-3 gap-6 mb-8">
           <StatCard label="Throughput" value={summaryStats.throughput} trend={summaryStats.throughputTrend} icon={<Activity className="text-indigo-400" />} color="indigo" series={summaryStats.throughputSeries} />
           <StatCard label="P99 Latency" value={summaryStats.p99} trend={summaryStats.latencyTrend} icon={<Clock3 className="text-rose-400" />} color="rose" series={summaryStats.p99Series} />
-          <StatCard label="Anomaly Rate" value={summaryStats.errorRate} trend={anomalies.length > 0 ? `${anomalies.length} alerts` : "Normal"} icon={<Shield className="text-emerald-400" />} color="emerald" series={summaryStats.anomalySeries} />
+          <StatCard label="Anomaly Rate" value={summaryStats.errorRate} trend={stats.total_traces > 0 ? `${stats.anomaly_count}/${stats.total_traces}` : "Normal"} icon={<Shield className="text-emerald-400" />} color="emerald" series={summaryStats.anomalySeries} />
         </div>
 
         {/* Chart View */}
@@ -561,7 +556,7 @@ export default function App() {
                   contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }}
                   itemStyle={{ color: '#818cf8', fontWeight: 'bold' }}
                 />
-                <Area type="monotone" dataKey="val" stroke="#818cf8" strokeWidth={3} fillOpacity={1} fill="url(#colorVal)" />
+                <Area type="monotone" dataKey="val" stroke="#818cf8" strokeWidth={3} fillOpacity={1} fill="url(#colorVal)" isAnimationActive={false} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -587,7 +582,7 @@ export default function App() {
                 </div>
               ) : (
                 filteredAnomalies.map((item, idx) => (
-                  <AnomalyRow key={item.trace_id || idx} item={item} onClick={() => runRCA(item)} />
+                  <AnomalyRow key={item.id ?? `${item.trace_id}-${item.timestamp}-${idx}`} item={item} onClick={() => runRCA(item)} />
                 ))
               )}
             </div>
@@ -865,12 +860,12 @@ export default function App() {
                       <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Service Metrics — {selectedTrace.service}</label>
                       <div className="h-48">
                         <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={chartData.filter(d => true)}>
+                          <AreaChart data={chartData}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
                             <XAxis dataKey="time" stroke="#475569" fontSize={9} tickLine={false} axisLine={false} />
                             <YAxis stroke="#475569" fontSize={9} axisLine={false} tickLine={false} />
                             <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }} itemStyle={{ color: '#818cf8', fontWeight: 'bold' }} />
-                            <Area type="monotone" dataKey="val" stroke="#818cf8" strokeWidth={2} fillOpacity={0.2} fill="#6366f1" />
+                            <Area type="monotone" dataKey="val" stroke="#818cf8" strokeWidth={2} fillOpacity={0.2} fill="#6366f1" isAnimationActive={false} />
                           </AreaChart>
                         </ResponsiveContainer>
                       </div>
@@ -1078,55 +1073,9 @@ export default function App() {
             )}
           </div>
         </div>
-        {/* Resource Saturation per Photo 4 */}
-        <div className="grid grid-cols-2 gap-6 mt-8">
-          <div className="bg-slate-900/40 border border-slate-800/80 p-6 rounded-2xl group">
-            <div className="flex justify-between items-center mb-6">
-              <h6 className="text-[10px] font-black uppercase text-slate-500 tracking-widest">CPU Usage / Pod</h6>
-              <span className="text-[8px] text-slate-600 font-mono">60s window</span>
-            </div>
-            <div className="flex items-end gap-1.5 h-24">
-              {resourceChartData.cpuBars.map((h, i) => (
-                <div key={i} className={cn(
-                  "flex-1 rounded-t-sm transition-all duration-1000",
-                  h > 80 ? "bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)]" : "bg-indigo-500/20 group-hover:bg-indigo-500/60"
-                )} style={{ height: `${h}%` }} />
-              ))}
-            </div>
-          </div>
-          <div className="bg-slate-900/40 border border-slate-800/80 p-6 rounded-2xl group">
-            <div className="flex justify-between items-center mb-6">
-              <h6 className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Memory Saturation</h6>
-              <span className="text-[8px] text-indigo-400 font-mono italic">Live Streams</span>
-            </div>
-            <div className="h-24 w-full">
-              <svg viewBox="0 0 100 20" preserveAspectRatio="none" className="w-full h-full overflow-visible">
-                <defs>
-                  <linearGradient id="mem-grad" x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="0%" stopColor="#818cf8" stopOpacity="0.4" />
-                    <stop offset="100%" stopColor="#818cf8" stopOpacity="0" />
-                  </linearGradient>
-                </defs>
-                {resourceChartData.hasMemData && (
-                  <path
-                    d={`${resourceChartData.memPath} L 100 20 L 0 20 Z`}
-                    fill="url(#mem-grad)"
-                    stroke="none"
-                  />
-                )}
-                <path
-                  d={resourceChartData.memPath}
-                  fill="none"
-                  stroke="#818cf8"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  vectorEffect="non-scaling-stroke"
-                  className={resourceChartData.hasMemData ? "" : "animate-wave"}
-                />
-              </svg>
-            </div>
-          </div>
+        {/* PII Redaction Density — paper §IV-C novel security primitive */}
+        <div className="mt-8">
+          <PIIRedactionPanel backendUrl={BACKEND_URL} />
         </div>
       </main>
     </div>
@@ -1159,6 +1108,90 @@ function AnomalyRow({ item, onClick }) {
       <div className="text-right flex items-center gap-2">
         <div className="text-sm font-black text-rose-500">{(item.duration_ms ?? 0).toFixed(0)}ms</div>
         <ChevronRight className="w-4 h-4 text-slate-600 group-hover:translate-x-1 transition-transform" />
+      </div>
+    </div>
+  );
+}
+
+function PIIRedactionPanel({ backendUrl }) {
+  const [series, setSeries] = useState({ "api-gateway": [], "python-service": [] });
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchAll = async () => {
+      try {
+        const [gw, py] = await Promise.all([
+          fetch(`${backendUrl}/api/metrics/api-gateway/redaction_count`).then(r => r.ok ? r.json() : []),
+          fetch(`${backendUrl}/api/metrics/python-service/redaction_count`).then(r => r.ok ? r.json() : []),
+        ]);
+        if (!cancelled) setSeries({ "api-gateway": gw, "python-service": py });
+      } catch {}
+    };
+    fetchAll();
+    const id = setInterval(fetchAll, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [backendUrl]);
+
+  const chartData = useMemo(() => {
+    const merged = {};
+    for (const [svc, rows] of Object.entries(series)) {
+      for (const r of rows) {
+        const t = new Date(r.timestamp).toLocaleTimeString();
+        if (!merged[t]) merged[t] = { time: t };
+        merged[t][svc] = r.value;
+      }
+    }
+    return Object.values(merged).slice(-30);
+  }, [series]);
+
+  const latest = {
+    gw: series["api-gateway"].slice(-1)[0]?.value ?? 0,
+    py: series["python-service"].slice(-1)[0]?.value ?? 0,
+  };
+  const total = (latest.gw + latest.py).toFixed(0);
+
+  return (
+    <div className="bg-slate-900/40 border border-slate-800/80 p-6 rounded-2xl">
+      <div className="flex justify-between items-start mb-4">
+        <div>
+          <h6 className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
+            <Shield className="w-3 h-3 text-emerald-400" />
+            PII Redaction Density
+          </h6>
+          <p className="text-[10px] text-slate-600 mt-1 italic">Paper §IV-C — novel security primitive derived from redaction-token counts</p>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-black text-emerald-400">{total}</div>
+          <div className="text-[10px] text-slate-500 uppercase tracking-widest">total tokens redacted</div>
+        </div>
+      </div>
+      <div className="h-40">
+        {chartData.length === 0 ? (
+          <div className="h-full flex items-center justify-center text-xs text-slate-600">
+            No redaction events yet. Run <code className="text-slate-400 mx-1">./traffic.sh 60 pii</code> to populate.
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData}>
+              <defs>
+                <linearGradient id="redact-gw" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id="redact-py" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#818cf8" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#818cf8" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
+              <XAxis dataKey="time" stroke="#475569" fontSize={10} tickLine={false} axisLine={false} />
+              <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }} />
+              <Area type="monotone" dataKey="api-gateway" stroke="#10b981" strokeWidth={2} fill="url(#redact-gw)" isAnimationActive={false} />
+              <Area type="monotone" dataKey="python-service" stroke="#818cf8" strokeWidth={2} fill="url(#redact-py)" isAnimationActive={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
       </div>
     </div>
   );

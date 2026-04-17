@@ -117,6 +117,13 @@ class SQLiteStorage(TelemetryStorage):
             """)
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_service ON logs(service_name)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_trace ON logs(trace_id)")
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS trace_counters (
+                    service TEXT PRIMARY KEY,
+                    total INTEGER NOT NULL DEFAULT 0,
+                    anomalous INTEGER NOT NULL DEFAULT 0
+                )
+            """)
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_severity ON logs(severity)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_alerts_service ON alerts(service)")
             await db.commit()
@@ -196,6 +203,30 @@ class SQLiteStorage(TelemetryStorage):
                 d["spans"] = json.loads(d["spans_json"])
                 return d
             return None
+
+    async def get_stats(self, service: Optional[str] = None):
+        async with aiosqlite.connect(self.db_path) as db:
+            if service and service != "All Services":
+                row = await (await db.execute(
+                    "SELECT COALESCE(SUM(total),0), COALESCE(SUM(anomalous),0) FROM trace_counters WHERE service=?",
+                    (service,)
+                )).fetchone()
+            else:
+                row = await (await db.execute(
+                    "SELECT COALESCE(SUM(total),0), COALESCE(SUM(anomalous),0) FROM trace_counters"
+                )).fetchone()
+            total_traces = row[0] if row else 0
+            anomaly_count = row[1] if row else 0
+            return {"total_traces": total_traces, "anomaly_count": anomaly_count}
+
+    async def increment_trace_counter(self, service: str, is_anomaly: bool):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO trace_counters (service, total, anomalous) VALUES (?, 1, ?) "
+                "ON CONFLICT(service) DO UPDATE SET total = total + 1, anomalous = anomalous + excluded.anomalous",
+                (service, 1 if is_anomaly else 0),
+            )
+            await db.commit()
 
     async def save_log(self, log: Dict):
         async with aiosqlite.connect(self.db_path) as db:
@@ -339,6 +370,18 @@ async def receive_metric(metric: MetricUpdate):
 @app.get("/api/alerts")
 async def get_alerts(service: Optional[str] = None):
     return await storage.get_alerts(service=service)
+
+@app.get("/api/stats")
+async def get_stats(service: Optional[str] = None):
+    return await storage.get_stats(service=service)
+
+@app.post("/api/trace_observed")
+async def observe_trace(payload: Dict):
+    services = payload.get("services", [])
+    is_anomaly = bool(payload.get("is_anomaly", False))
+    for svc in services:
+        await storage.increment_trace_counter(svc, is_anomaly)
+    return {"status": "ok"}
 
 @app.post("/api/traces")
 async def receive_trace(trace: TraceInventory):

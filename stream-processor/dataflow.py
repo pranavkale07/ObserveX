@@ -174,7 +174,14 @@ def process_full_trace(item):
     ml_scores = verdict.get("per_model", {})
     anomaly_type = classify_anomaly(reasons, ml_scores) if is_anom else None
 
-    # 2. Forensic inventory + correlated log flush for anomalous traces.
+    # 2. Cumulative trace counters (for true anomaly rate denominator).
+    services_in_trace = sorted({s["service"] for s in spans})
+    send_to_dashboard("/api/trace_observed", {
+        "services": services_in_trace,
+        "is_anomaly": bool(is_anom),
+    })
+
+    # 3. Forensic inventory + correlated log flush for anomalous traces.
     if is_anom:
         send_to_dashboard("/api/traces", {
             "trace_id": trace_id,
@@ -247,12 +254,11 @@ def handle_log_with_redaction(state, log):
 
     if is_redacted:
         state["redaction_count"] += 1
-        if state["redaction_count"] % 5 == 0:
-            send_to_dashboard("/api/metrics", {
-                "service": service, "metric_type": "redaction_count",
-                "value": float(state["redaction_count"]),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+        send_to_dashboard("/api/metrics", {
+            "service": service, "metric_type": "redaction_count",
+            "value": float(state["redaction_count"]),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
 
     # PII density detector — paper §IV-C (security primitive).
     detection = pii_detector.observe(service, is_redacted)
